@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -148,6 +148,28 @@ void testIllegalVariable() {
     ASSERT(threwException);
 }
 
+void testInconsistentParameters() {
+    // Specifying two inconsistent default values for a global parameter should throw an exception.
+    
+    System system;
+    system.addParticle(1.0);
+    CustomBondForce* bonds1 = new CustomBondForce("k*r");
+    CustomBondForce* bonds2 = new CustomBondForce("k*r");
+    bonds1->addGlobalParameter("k", 1.0);
+    bonds2->addGlobalParameter("k", 2.0);
+    system.addForce(bonds1);
+    system.addForce(bonds2);
+    VerletIntegrator integrator(0.001);
+    bool threwException = false;
+    try {
+        Context context(system, integrator, platform);
+    }
+    catch (const exception& e) {
+        threwException = true;
+    }
+    ASSERT(threwException);
+}
+
 void testPeriodic() {
     // Create a force that uses periodic boundary conditions.
     
@@ -213,6 +235,51 @@ void testEnergyParameterDerivatives() {
     }
 }
 
+void testParallelComputation() {
+    System system;
+    const int numParticles = 200;
+    for (int i = 0; i < numParticles; i++)
+        system.addParticle(1.0);
+    CustomBondForce* force = new CustomBondForce(("k*(r-r0)^2"));
+    force->addPerBondParameter("k");
+    force->addPerBondParameter("r0");
+    for (int i = 1; i < numParticles; i++)
+        force->addBond(i-1, i, {1.0, 1.1});
+    system.addForce(force);
+    vector<Vec3> positions(numParticles);
+    for (int i = 0; i < numParticles; i++)
+        positions[i] = Vec3(i, 0, 0);
+    VerletIntegrator integrator1(0.01);
+    Context context1(system, integrator1, platform);
+    context1.setPositions(positions);
+    State state1 = context1.getState(State::Forces | State::Energy);
+    VerletIntegrator integrator2(0.01);
+    string deviceIndex = platform.getPropertyValue(context1, "DeviceIndex");
+    map<string, string> props;
+    props["DeviceIndex"] = deviceIndex+","+deviceIndex;
+    Context context2(system, integrator2, platform, props);
+    context2.setPositions(positions);
+    State state2 = context2.getState(State::Forces | State::Energy);
+    ASSERT_EQUAL_TOL(state1.getPotentialEnergy(), state2.getPotentialEnergy(), 1e-5);
+    for (int i = 0; i < numParticles; i++)
+        ASSERT_EQUAL_VEC(state1.getForces()[i], state2.getForces()[i], 1e-5);
+
+    // Try updating some parameters and see if they still match.
+
+    vector<double> params;
+    for (int i = 95; i < 102; i++) {
+        int p1, p2;
+        force->getBondParameters(i, p1, p2, params);
+        force->setBondParameters(i, p1, p2, {2.0, 1.2});
+    }
+    force->updateParametersInContext(context1);
+    force->updateParametersInContext(context2);
+    State state3 = context1.getState(State::Energy);
+    State state4 = context2.getState(State::Energy);
+    ASSERT_EQUAL_TOL(state3.getPotentialEnergy(), state4.getPotentialEnergy(), 1e-5);
+    ASSERT(fabs(state1.getPotentialEnergy()-state3.getPotentialEnergy()) > 0.1);
+}
+
 void runPlatformTests();
 
 int main(int argc, char* argv[]) {
@@ -221,6 +288,7 @@ int main(int argc, char* argv[]) {
         testBonds();
         testManyParameters();
         testIllegalVariable();
+        testInconsistentParameters();
         testPeriodic();
         testEnergyParameterDerivatives();
         runPlatformTests();

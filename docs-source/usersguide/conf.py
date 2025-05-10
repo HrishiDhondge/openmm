@@ -142,6 +142,11 @@ html_theme_options = {
             "relative": True,
         },
         {
+            "title": "Cookbook & Tutorials",
+            "uri": "https://openmm.github.io/openmm-cookbook/",
+            "relative": False,
+        },
+        {
             "title": "GitHub",
             "uri": "https://github.com/openmm",
             "relative": False,
@@ -237,7 +242,7 @@ latex_elements = {
     \\captionsetup[figure]{labelformat=empty}
     % Backwards compatibility for sphinx < 1.5
     \\let\\DUspan\\null % force DUspan to be defined
-    \\renewcommand{\DUspan}[2]{%
+    \\renewcommand{\\DUspan}[2]{%
         \\IfEqCase{#1}{%
             {code}{\\small{}\\texttt{#2}\\normalsize{}}
         }[\\PackageError{DUspan}{Unrecognized option passed to DUspan: #1}{}]%

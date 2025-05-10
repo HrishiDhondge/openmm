@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -37,6 +37,7 @@
 #include "openmm/Kernel.h"
 #include "openmm/internal/ThreadPool.h"
 #include "lepton/CompiledExpression.h"
+#include "lepton/CompiledVectorExpression.h"
 #include <utility>
 #include <map>
 #include <string>
@@ -62,14 +63,14 @@ public:
     double calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups);
     std::map<std::string, double> getDefaultParameters();
     std::vector<std::string> getKernelNames();
-    void updateParametersInContext(ContextImpl& context);
+    void updateParametersInContext(ContextImpl& context, int firstParticle, int lastParticle);
     /**
      * Prepare for computing the long range correction.  This function pre-computes anything
      * that depends only on the Force (such as particle parameters) but not on information in
      * the Context (such as global parameters).  This allows the coefficient to be updated
      * more quickly when global parameters change.
      */
-    static LongRangeCorrectionData prepareLongRangeCorrection(const CustomNonbondedForce& force);
+    static LongRangeCorrectionData prepareLongRangeCorrection(const CustomNonbondedForce& force, int numThreads);
     /**
      * Compute the coefficient which, when divided by the periodic box volume, gives the
      * long range correction to the energy.  If the Force computes parameter derivatives,
@@ -77,7 +78,7 @@ public:
      */
     static void calcLongRangeCorrection(const CustomNonbondedForce& force, LongRangeCorrectionData& data, const Context& context, double& coefficient, std::vector<double>& derivatives, ThreadPool& threads);
 private:
-    static double integrateInteraction(Lepton::CompiledExpression& expression, const std::vector<double>& params1, const std::vector<double>& params2,
+    static double integrateInteraction(Lepton::CompiledVectorExpression& expression, const std::vector<double>& params1, const std::vector<double>& params2,
             const std::vector<double>& computedValues1, const std::vector<double>& computedValues2, const CustomNonbondedForce& force, const Context& context,
             const std::vector<std::string>& paramNames, const std::vector<std::string>& computedValueNames);
     const CustomNonbondedForce& owner;
@@ -90,8 +91,9 @@ public:
     std::vector<std::vector<double> > classes;
     std::vector<std::string> paramNames, computedValueNames;
     std::map<std::pair<int, int>, long long int> interactionCount;
-    Lepton::CompiledExpression energyExpression;
-    std::vector<Lepton::CompiledExpression> derivExpressions, computedValueExpressions;
+    std::vector<Lepton::CompiledVectorExpression> energyExpression;
+    std::vector<std::vector<Lepton::CompiledVectorExpression> > derivExpressions;
+    std::vector<Lepton::CompiledExpression> computedValueExpressions;
 };
 
 } // namespace OpenMM

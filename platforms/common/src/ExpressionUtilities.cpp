@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -72,12 +72,13 @@ void ExpressionUtilities::processExpression(stringstream& out, const ExpressionT
     string name = prefix+context.intToString(temps.size());
     bool hasRecordedNode = false;
     bool isVecType = (tempType[tempType.size()-1] == '3');
+    bool useMixedPrecision = (tempType.find("double") != string::npos || tempType.find("mixed") != string::npos);
 
     out << tempType << " " << name << " = ";
     switch (node.getOperation().getId()) {
         case Operation::CONSTANT:
         {
-            string value = context.doubleToString(dynamic_cast<const Operation::Constant*>(&node.getOperation())->getValue());
+            string value = context.doubleToString(dynamic_cast<const Operation::Constant*>(&node.getOperation())->getValue(), useMixedPrecision);
             if (isVecType)
                 out << "make_" << tempType << "(" << value << ")";
             else
@@ -318,7 +319,7 @@ void ExpressionUtilities::processExpression(stringstream& out, const ExpressionT
                     throw OpenMMException("Unknown function in expression: "+node.getOperation().getName());
                 vector<string> paramsFloat, paramsInt;
                 for (int j = 0; j < (int) functionParams[i].size(); j++) {
-                    paramsFloat.push_back(context.doubleToString(functionParams[i][j]));
+                    paramsFloat.push_back(context.doubleToString(functionParams[i][j], useMixedPrecision));
                     paramsInt.push_back(context.intToString((int) functionParams[i][j]));
                 }
                 vector<string> suffixes;
@@ -682,7 +683,7 @@ void ExpressionUtilities::processExpression(stringstream& out, const ExpressionT
             break;
         case Operation::ADD_CONSTANT:
             if (isVecType) {
-                string val = context.doubleToString(dynamic_cast<const Operation::AddConstant*>(&node.getOperation())->getValue());
+                string val = context.doubleToString(dynamic_cast<const Operation::AddConstant*>(&node.getOperation())->getValue(), useMixedPrecision);
                 string arg = getTempName(node.getChildren()[0], temps);
                 out << "make_" << tempType << "(";
                 out << val << "+" << arg << ".x, ";
@@ -690,10 +691,10 @@ void ExpressionUtilities::processExpression(stringstream& out, const ExpressionT
                 out << val << "+" << arg << ".z)";
             }
             else
-                out << context.doubleToString(dynamic_cast<const Operation::AddConstant*>(&node.getOperation())->getValue()) << "+" << getTempName(node.getChildren()[0], temps);
+                out << context.doubleToString(dynamic_cast<const Operation::AddConstant*>(&node.getOperation())->getValue(), useMixedPrecision) << "+" << getTempName(node.getChildren()[0], temps);
             break;
         case Operation::MULTIPLY_CONSTANT:
-            out << context.doubleToString(dynamic_cast<const Operation::MultiplyConstant*>(&node.getOperation())->getValue()) << "*" << getTempName(node.getChildren()[0], temps);
+            out << context.doubleToString(dynamic_cast<const Operation::MultiplyConstant*>(&node.getOperation())->getValue(), useMixedPrecision) << "*" << getTempName(node.getChildren()[0], temps);
             break;
         case Operation::POWER_CONSTANT:
         {
@@ -756,7 +757,7 @@ void ExpressionUtilities::processExpression(stringstream& out, const ExpressionT
                 out << "}";
             }
             else
-                out << "pow((" << tempType << ") " << getTempName(node.getChildren()[0], temps) << ", (" << tempType << ") " << context.doubleToString(exponent) << ")";
+                out << "pow((" << tempType << ") " << getTempName(node.getChildren()[0], temps) << ", (" << tempType << ") " << context.doubleToString(exponent, useMixedPrecision) << ")";
             break;
         }
         case Operation::MIN:
@@ -1078,7 +1079,7 @@ Lepton::CustomFunction* ExpressionUtilities::getPeriodicDistancePlaceholder() {
 }
 
 void ExpressionUtilities::callFunction(stringstream& out, string singleFn, string doubleFn, const string& arg, const string& tempType) {
-    bool isDouble = (tempType[0] == 'd');
+    bool isDouble = (context.getUseDoublePrecision() || tempType[0] == 'd');
     bool isVector = (tempType[tempType.size()-1] == '3');
     string fn = (isDouble ? doubleFn : singleFn);
     if (isVector)
@@ -1088,7 +1089,7 @@ void ExpressionUtilities::callFunction(stringstream& out, string singleFn, strin
 }
 
 void ExpressionUtilities::callFunction2(stringstream& out, string singleFn, string doubleFn, const string& arg1, const string& arg2, const string& tempType) {
-    bool isDouble = (tempType[0] == 'd');
+    bool isDouble = (context.getUseDoublePrecision() || tempType[0] == 'd');
     bool isVector = (tempType[tempType.size()-1] == '3');
     string fn = (isDouble ? doubleFn : singleFn);
     if (isVector) {

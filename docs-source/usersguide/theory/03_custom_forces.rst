@@ -413,6 +413,29 @@ be used as a collective variable.  The energy is then computed as
 where *f*\ (...) is a user supplied mathematical expression of the collective
 variables.  It also may depend on user defined global parameters.
 
+CustomVolumeForce
+*****************
+
+CustomVolumeForce computes an energy that depends only on the box vectors
+defining the periodic box (see Section :numref:`periodic-boundary-conditions`).
+
+.. math::
+   E = f(\mathbf{a}, \mathbf{b}, \mathbf{c})
+
+Because the energy does not depend on particle positions, it does not apply any
+forces to particles.  It is primarily useful for constant pressure simulations,
+where the volume-dependent energy can influence the behavior of the barostat.
+Energy terms of this sort are often used for pressure matching in coarse grained
+force fields.
+
+ATMForce
+********
+
+ATMForce implements the Alchemical Transfer Method for free energy calculations.\ :cite:`Azimi2022`
+It contains one or more :code:`Force` objects whose energy is evaluated twice,
+before and after displacing some particles to new positions.  The final energy
+is determined by a user supplied mathematical function of the two energies.  See
+the API documentation and the publication for more details.
 
 .. _writing-custom-expressions:
 
@@ -464,6 +487,13 @@ usually be quite small.  There can be exceptions to this rule, however.  For
 example, if a :class:`CustomNonbondedForce` uses a long range correction, changing
 a global parameter may require the correction coefficient to be recalculated,
 which is expensive.
+
+It is possible for multiple forces to depend on the same global parameter.  To do this,
+simply have each force specify a parameter with the same name.  This can be useful
+in certain cases.  For example, in an alchemical simulation, you might have a
+parameter that interpolates between two endpoints corresponding to different molecules.
+Changing the one parameter would simultaneously modify multiple bonded and nonbonded
+forces.
 
 The other type of parameter is ones that record many values, one for each element
 of the force, such as per-particle or per-bond parameters.  These values are stored

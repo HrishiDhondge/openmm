@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -31,6 +31,7 @@
 
 #include "lepton/ParsedExpression.h"
 #include "lepton/CompiledExpression.h"
+#include "lepton/CompiledVectorExpression.h"
 #include "lepton/ExpressionProgram.h"
 #include "lepton/Operation.h"
 #include <limits>
@@ -151,10 +152,10 @@ ExpressionTreeNode ParsedExpression::substituteSimplerExpression(const Expressio
         else
             children[i] = cached->second;
     }
-    
+
     // Collect some info on constant expressions in children
     bool first_const = children.size() > 0 && isConstant(children[0]); // is first child constant?
-    bool second_const = children.size() > 1 && isConstant(children[1]); ; // is second child constant?   
+    bool second_const = children.size() > 1 && isConstant(children[1]); // is second child constant?
     double first, second; // if yes, value of first and second child
     if (first_const)
         first = getConstantValue(children[0]);
@@ -204,7 +205,7 @@ ExpressionTreeNode ParsedExpression::substituteSimplerExpression(const Expressio
             break;
         }
         case Operation::MULTIPLY:
-        {   
+        {
             if ((first_const && first == 0.0) || (second_const && second == 0.0)) // Multiply by 0
                 return ExpressionTreeNode(new Operation::Constant(0.0));
             if (first_const && first == 1.0) // Multiply by 1
@@ -246,7 +247,7 @@ ExpressionTreeNode ParsedExpression::substituteSimplerExpression(const Expressio
         case Operation::DIVIDE:
         {
             if (children[0] == children[1])
-                return ExpressionTreeNode(new Operation::Constant(1.0)); // Dividing anything from itself is 0
+                return ExpressionTreeNode(new Operation::Constant(1.0)); // Dividing anything by itself is 1
             if (first_const && first == 0.0) // 0 divided by something
                 return ExpressionTreeNode(new Operation::Constant(0.0));
             if (first_const && first == 1.0) // 1 divided by something
@@ -318,11 +319,19 @@ ExpressionTreeNode ParsedExpression::substituteSimplerExpression(const Expressio
         {
             if (children[0].getOperation().getId() == Operation::SQUARE) // sqrt(square(x)) = abs(x)
                 return ExpressionTreeNode(new Operation::Abs(), children[0].getChildren()[0]);
+            break;
         }
         case Operation::SQUARE:
         {
             if (children[0].getOperation().getId() == Operation::SQRT) // square(sqrt(x)) = x
                 return children[0].getChildren()[0];
+            break;
+        }
+        case Operation::SELECT:
+        {
+            if (children[1] == children[2]) // Select between two identical values
+                return children[1];
+            break;
         }
         default:
         {
@@ -371,6 +380,10 @@ ExpressionProgram ParsedExpression::createProgram() const {
 
 CompiledExpression ParsedExpression::createCompiledExpression() const {
     return CompiledExpression(*this);
+}
+
+CompiledVectorExpression ParsedExpression::createCompiledVectorExpression(int width) const {
+    return CompiledVectorExpression(*this, width);
 }
 
 ParsedExpression ParsedExpression::renameVariables(const map<string, string>& replacements) const {

@@ -1,4 +1,4 @@
-/* Portions copyright (c) 2006-2015 Stanford University and Simbios.
+/* Portions copyright (c) 2006-2022 Stanford University and Simbios.
  * Contributors: Pande Group
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -28,7 +28,6 @@
 #include "openmm/Vec3.h"
 #include "AmoebaReferenceGeneralizedKirkwoodForce.h"
 #include <map>
-#include "fftpack.h"
 #include <complex>
 
 namespace OpenMM {
@@ -1240,9 +1239,15 @@ public:
      * Get dielectric offset.
      *
      * @return dielectric offset
-     *
      */
     double getDielectricOffset() const;
+
+    /**
+     * Get the descreen offset.
+     *
+     * @return descreen offset.
+     */
+    double getDescreenOffset() const;
 
 private:
 
@@ -1253,10 +1258,17 @@ private:
     double _fd;
     double _fq;
 
+    double _beta0;
+    double _beta1;
+    double _beta2;
+
     std::vector<double> _atomicRadii;
-    std::vector<double> _scaledRadii;
+    std::vector<double> _scaleFactors;
+    std::vector<double> _descreenRadii;
+    std::vector<double> _neckFactors;
+
     std::vector<double> _bornRadii;
-    std::vector<double> _bornForce;
+    std::vector<double> _soluteIntegral;
 
     std::vector<Vec3> _gkField;
     std::vector<Vec3> _inducedDipoleS;
@@ -1270,6 +1282,8 @@ private:
     double _probeRadius;
     double _surfaceAreaFactor;
     double _dielectricOffset;
+    double _tanhRescaling;
+    double _descreenOffset;
 
     /**
      * Zero fixed multipole fields.
@@ -1474,10 +1488,8 @@ private:
     int _totalGridSize;
     IntVec _pmeGridDimensions;
 
-    fftpack_t   _fftplan;
-
     unsigned int _pmeGridSize;
-    t_complex* _pmeGrid;
+    std::complex<double>* _pmeGrid;
  
     std::vector<double> _pmeBsplineModuli[3];
     std::vector<double4> _thetai[3];

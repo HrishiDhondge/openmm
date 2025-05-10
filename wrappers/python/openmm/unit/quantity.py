@@ -85,12 +85,15 @@ class Quantity(object):
     such as 'meters per second'.
 
     Supported value types include:
-      1 - numbers (float, int, long)
-      2 - lists of numbers, e.g. [1,2,3]
-      3 - tuples of numbers, e.g. (1,2,3)
-            Note - unit conversions will cause tuples to be converted to lists
-      4 - lists of tuples of numbers, lists of lists of ... etc. of numbers
-      5 - numpy.arrays
+    
+    1. numbers (float, int, long)
+    2. lists of numbers, e.g. [1,2,3]
+    3. tuples of numbers, e.g. (1,2,3)
+        
+       - Note: unit conversions will cause tuples to be converted to lists
+      
+    4. lists of tuples of numbers, lists of lists of ... etc. of numbers
+    5. numpy.arrays
     """
     __array_priority__ = 99
 
@@ -212,8 +215,7 @@ class Quantity(object):
     def __repr__(self):
         """
         """
-        return (Quantity.__name__ + '(value=' + repr(self._value) + ', unit=' +
-                str(self.unit) + ')')
+        return str(self)
 
     def format(self, format_spec):
         return format_spec % self._value + ' ' + str(self.unit.get_symbol())

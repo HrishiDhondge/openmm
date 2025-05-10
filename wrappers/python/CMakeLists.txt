@@ -51,10 +51,14 @@ foreach(SUBDIR ${SUBDIRS})
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*README.txt"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.pyx"
+	"${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.pxd"
+	"${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.i"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.ini"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.xml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.xtc"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.pdb"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.pdbx"
         "${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.cif"
@@ -277,8 +281,29 @@ add_custom_target(PythonSdist
     COMMENT "Packaging source distribution package (sdist)..."
 )
 
-# Install binary module (to system location)
-set(PYTHON_SETUP_COMMAND "install --root=\$ENV{DESTDIR}/")
+# Wheel
+set(PYTHON_SETUP_COMMAND bdist_wheel)
+configure_file(pysetup.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/pysetupbdist_wheel.cmake" @ONLY)
+add_custom_target(PythonBdistWheel
+    COMMAND ${CMAKE_COMMAND}
+        -P "${CMAKE_CURRENT_BINARY_DIR}/pysetupbdist_wheel.cmake"
+    DEPENDS ${STAGING_OUTPUT_FILES} "${CMAKE_CURRENT_BINARY_DIR}/pysetupbdist_wheel.cmake"
+    WORKING_DIRECTORY ${OPENMM_PYTHON_STAGING_DIR}
+    COMMENT "Packaging wheel (bdist_wheel)..."
+)
+
+set(OPENMM_PYTHON_USER_INSTALL OFF CACHE BOOL
+    "Whether to install OpenMM Python binary module into the user site-packages directory")
+mark_as_advanced(OPENMM_PYTHON_USER_INSTALL)
+
+if(OPENMM_PYTHON_USER_INSTALL)
+    # Install binary module to user location
+    set(PYTHON_SETUP_COMMAND "install --user")
+else()
+    # Install binary module to system location
+    set(PYTHON_SETUP_COMMAND "install --root=\$ENV{DESTDIR}/")
+endif()
 configure_file(pysetup.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/pysetupinstall.cmake" @ONLY)
 add_custom_target(PythonInstall

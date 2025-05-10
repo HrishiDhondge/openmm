@@ -6,7 +6,7 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2022 Stanford University and the Authors.
+Portions copyright (c) 2012-2025 Stanford University and the Authors.
 Authors: Peter Eastman
 Contributors:
 
@@ -82,11 +82,26 @@ def _strip_optunit(thing, unit):
 class AmberPrmtopFile(object):
     """AmberPrmtopFile parses an AMBER prmtop file and constructs a Topology and (optionally) an OpenMM System from it."""
 
-    def __init__(self, file):
-        """Load a prmtop file."""
+    def __init__(self, file, periodicBoxVectors=None, unitCellDimensions=None):
+        """Load a prmtop file.
+
+        file : str
+            the name of the file to load
+        periodicBoxVectors : tuple of Vec3=None
+            the vectors defining the periodic box
+        unitCellDimensions : Vec3=None
+            the dimensions of the crystallographic unit cell.  For
+            non-rectangular unit cells, specify periodicBoxVectors instead.
+        """
         ## The Topology read from the prmtop file
         self.topology = top = Topology()
         self.elements = []
+        if periodicBoxVectors is not None:
+            if unitCellDimensions is not None:
+                raise ValueError("Specify either periodicBoxVectors or unitCellDimensions, but not both")
+            top.setPeriodicBoxVectors(periodicBoxVectors)
+        else:
+            top.setUnitCellDimensions(unitCellDimensions)
 
         # Load the prmtop file
 
@@ -145,13 +160,19 @@ class AmberPrmtopFile(object):
 
         atoms = list(top.atoms())
         for bond in prmtop.getBondsWithH():
-            top.addBond(atoms[bond[0]], atoms[bond[1]])
+            a1 = atoms[bond[0]]
+            a2 = atoms[bond[1]]
+            if a1.residue.name == 'HOH' and a1.element == elem.hydrogen and a2.element == elem.hydrogen:
+                # Don't add the "bond" Amber lists between the two hydrogens of a water molecule.
+                pass
+            else:
+                top.addBond(a1, a2)
         for bond in prmtop.getBondsNoH():
             top.addBond(atoms[bond[0]], atoms[bond[1]])
 
         # Set the periodic box size.
 
-        if prmtop.getIfBox():
+        if top.getPeriodicBoxVectors() is None and prmtop.getIfBox():
             box = prmtop.getBoxBetaAndDimensions()
             top.setPeriodicBoxVectors(computePeriodicBoxVectors(*(box[1:4] + box[0:1]*3)))
 
@@ -161,7 +182,7 @@ class AmberPrmtopFile(object):
                      implicitSolventKappa=None, temperature=298.15*u.kelvin,
                      soluteDielectric=1.0, solventDielectric=78.5,
                      removeCMMotion=True, hydrogenMass=None, ewaldErrorTolerance=0.0005,
-                     switchDistance=0.0*u.nanometer, gbsaModel='ACE'):
+                     switchDistance=0.0*u.nanometer, flexibleConstraints=False, gbsaModel='ACE'):
         """Construct an OpenMM System representing the topology described by this
         prmtop file.
 
@@ -209,6 +230,8 @@ class AmberPrmtopFile(object):
             turned on for Lennard-Jones interactions. If the switchDistance is 0
             or evaluates to boolean False, no switching function will be used.
             Values greater than nonbondedCutoff or less than 0 raise ValueError
+        flexibleConstraints : boolean=False
+            If True, parameters for constrained degrees of freedom will be added to the System
         gbsaModel : str='ACE'
             The SA model used to model the nonpolar solvation component of GB
             implicit solvent models. If GB is active, this must be 'ACE' or None
@@ -228,7 +251,7 @@ class AmberPrmtopFile(object):
                      ff.LJPME:'LJPME'}
         if nonbondedMethod not in methodMap:
             raise ValueError('Illegal value for nonbonded method')
-        if not self._prmtop.getIfBox() and nonbondedMethod in (ff.CutoffPeriodic, ff.Ewald, ff.PME, ff.LJPME):
+        if self.topology.getPeriodicBoxVectors() is None and nonbondedMethod in (ff.CutoffPeriodic, ff.Ewald, ff.PME, ff.LJPME):
             raise ValueError('Illegal nonbonded method for a non-periodic system')
         constraintMap = {None:None,
                          ff.HBonds:'h-bonds',
@@ -273,7 +296,7 @@ class AmberPrmtopFile(object):
 
         sys = amber_file_parser.readAmberSystem(self.topology, prmtop_loader=self._prmtop, shake=constraintString,
                         nonbondedCutoff=nonbondedCutoff, nonbondedMethod=methodMap[nonbondedMethod],
-                        flexibleConstraints=False, gbmodel=implicitString, soluteDielectric=soluteDielectric,
+                        flexibleConstraints=flexibleConstraints, gbmodel=implicitString, soluteDielectric=soluteDielectric,
                         solventDielectric=solventDielectric, implicitSolventKappa=implicitSolventKappa,
                         rigidWater=rigidWater, elements=self.elements, gbsaModel=gbsaModel)
 
@@ -290,19 +313,20 @@ class AmberPrmtopFile(object):
         for force in sys.getForces():
             if isinstance(force, mm.NonbondedForce):
                 force.setEwaldErrorTolerance(ewaldErrorTolerance)
+            if isinstance(force, (mm.NonbondedForce, mm.CustomNonbondedForce)):
+                if switchDistance and nonbondedMethod is not ff.NoCutoff:
+                    # make sure it's legal
+                    if (_strip_optunit(switchDistance, u.nanometer) >=
+                            _strip_optunit(nonbondedCutoff, u.nanometer)):
+                        raise ValueError('switchDistance is too large compared '
+                                         'to the cutoff!')
+                    if _strip_optunit(switchDistance, u.nanometer) < 0:
+                        # Detects negatives for both Quantity and float
+                        raise ValueError('switchDistance must be non-negative!')
+                    force.setUseSwitchingFunction(True)
+                    force.setSwitchingDistance(switchDistance)
+
         if removeCMMotion:
             sys.addForce(mm.CMMotionRemover())
-
-        if switchDistance and nonbondedMethod is not ff.NoCutoff:
-            # make sure it's legal
-            if (_strip_optunit(switchDistance, u.nanometer) >=
-                    _strip_optunit(nonbondedCutoff, u.nanometer)):
-                raise ValueError('switchDistance is too large compared '
-                                 'to the cutoff!')
-            if _strip_optunit(switchDistance, u.nanometer) < 0:
-                # Detects negatives for both Quantity and float
-                raise ValueError('switchDistance must be non-negative!')
-            force.setUseSwitchingFunction(True)
-            force.setSwitchingDistance(switchDistance)
 
         return sys

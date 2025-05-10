@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2017 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -42,6 +42,7 @@ using namespace std;
 
 CustomCVForceImpl::CustomCVForceImpl(const CustomCVForce& owner) : owner(owner), innerIntegrator(1.0),
         innerContext(NULL) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomCVForceImpl::~CustomCVForceImpl() {
@@ -80,7 +81,7 @@ void CustomCVForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomCVForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomCVForceKernel>().execute(context, getContextImpl(*innerContext), includeForces, includeEnergy);
     return 0.0;
 }
@@ -89,6 +90,16 @@ vector<string> CustomCVForceImpl::getKernelNames() {
     vector<string> names;
     names.push_back(CalcCustomCVForceKernel::Name());
     return names;
+}
+
+vector<pair<int, int> > CustomCVForceImpl::getBondedParticles() const {
+    vector<pair<int, int> > bonds;
+    const ContextImpl& innerContextImpl = getContextImpl(*innerContext);
+    for (auto& impl : innerContextImpl.getForceImpls()) {
+        for (auto& bond : impl->getBondedParticles())
+            bonds.push_back(bond);
+    }
+    return bonds;
 }
 
 map<string, double> CustomCVForceImpl::getDefaultParameters() {

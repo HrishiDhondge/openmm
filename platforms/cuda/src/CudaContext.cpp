@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,14 +32,17 @@
 #include "CudaArray.h"
 #include "CudaBondedUtilities.h"
 #include "CudaEvent.h"
+#include "CudaFFT3D.h"
 #include "CudaIntegrationUtilities.h"
 #include "CudaKernels.h"
 #include "CudaKernelSources.h"
 #include "CudaNonbondedUtilities.h"
 #include "CudaProgram.h"
+#include "CudaSort.h"
 #include "openmm/common/ComputeArray.h"
 #include "openmm/common/ContextSelector.h"
 #include "SHA1.h"
+#include "openmm/MonteCarloFlexibleBarostat.h"
 #include "openmm/Platform.h"
 #include "openmm/System.h"
 #include "openmm/VirtualSite.h"
@@ -55,6 +58,7 @@
 #include <typeinfo>
 #include <sys/stat.h>
 #include <cudaProfiler.h>
+#include <nvrtc.h>
 #ifndef WIN32
   #include <unistd.h>
 #endif
@@ -67,6 +71,12 @@
         m<<prefix<<": "<<getErrorString(result)<<" ("<<result<<")"<<" at "<<__FILE__<<":"<<__LINE__; \
         throw OpenMMException(m.str());\
     }
+#define CHECK_NVRTC_RESULT(result, prefix) \
+    if (result != NVRTC_SUCCESS) { \
+        stringstream m; \
+        m<<prefix<<": "<<nvrtcGetErrorString(result)<<" ("<<result<<")"<<" at "<<__FILE__<<":"<<__LINE__; \
+        throw OpenMMException(m.str());\
+    }
 
 using namespace OpenMM;
 using namespace std;
@@ -75,66 +85,11 @@ const int CudaContext::ThreadBlockSize = 64;
 const int CudaContext::TileSize = sizeof(tileflags)*8;
 bool CudaContext::hasInitializedCuda = false;
 
-#ifdef WIN32
-#include <Windows.h>
-static int executeInWindows(const string &command) {
-    // COMSPEC is an env variable pointing to full dir of cmd.exe
-    // it always defined on pretty much all Windows OSes
-    string fullcommand = getenv("COMSPEC") + string(" /C ") + command;
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory( &si, sizeof(si) );
-    si.cb = sizeof(si);
-    ZeroMemory( &pi, sizeof(pi) );
-    vector<char> args(std::max(1000, (int) fullcommand.size()+1));
-    strcpy(&args[0], fullcommand.c_str());
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    if (!CreateProcess(NULL, &args[0], NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        return -1;
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode = -1;
-    if(!GetExitCodeProcess(pi.hProcess, &exitCode)) {
-        throw(OpenMMException("Could not get nvcc.exe's exit code\n"));
-    } else {
-        if(exitCode == 0)
-            return 0;
-        else
-            return -1;
-    }
-}
-#endif
-
-CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlockingSync, const string& precision, const string& compiler,
-        const string& tempDir, const std::string& hostCompiler, bool allowRuntimeCompiler, CudaPlatform::PlatformData& platformData,
-        CudaContext* originalContext) : ComputeContext(system), currentStream(0), platformData(platformData), contextIsValid(false), hasAssignedPosqCharges(false),
-        hasCompilerKernel(false), isNvccAvailable(false), pinnedBuffer(NULL), integration(NULL), expression(NULL), bonded(NULL), nonbonded(NULL) {
-    // Determine what compiler to use.
-    
-    this->compiler = "\""+compiler+"\"";
-    if (allowRuntimeCompiler && platformData.context != NULL) {
-        try {
-            compilerKernel = platformData.context->getPlatform().createKernel(CudaCompilerKernel::Name(), *platformData.context);
-            hasCompilerKernel = true;
-        }
-        catch (...) {
-            // The runtime compiler plugin isn't available.
-        }
-    }
-#ifdef WIN32
-    string testCompilerCommand = this->compiler+" --version > nul 2> nul";
-    int res = executeInWindows(testCompilerCommand.c_str());
-#else
-    string testCompilerCommand = this->compiler+" --version > /dev/null 2> /dev/null";
-    int res = std::system(testCompilerCommand.c_str());
-#endif
-    struct stat info;
-    isNvccAvailable = (res == 0 && stat(tempDir.c_str(), &info) == 0);
+CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlockingSync, const string& precision, const string& tempDir, CudaPlatform::PlatformData& platformData,
+        CudaContext* originalContext) : ComputeContext(system), platformData(platformData), contextIsValid(false), hasAssignedPosqCharges(false),
+        pinnedBuffer(NULL), integration(NULL), expression(NULL), bonded(NULL), nonbonded(NULL), useBlockingSync(useBlockingSync) {
     int cudaDriverVersion;
     cuDriverGetVersion(&cudaDriverVersion);
-    if (hostCompiler.size() > 0)
-        this->compiler = compiler+" --compiler-bindir "+hostCompiler;
     if (!hasInitializedCuda) {
         CHECK_RESULT2(cuInit(0), "Error initializing CUDA");
         hasInitializedCuda = true;
@@ -236,7 +191,7 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     contextIsValid = true;
     ContextSelector selector(*this);
     CHECK_RESULT(cuCtxSetCacheConfig(CU_FUNC_CACHE_PREFER_SHARED));
-    if (contextIndex > 0) {
+    if (contextIndex > 0 && originalContext == NULL) {
         int canAccess;
         cuDeviceCanAccessPeer(&canAccess, getDevice(), platformData.contexts[0]->getDevice());
         if (canAccess) {
@@ -247,6 +202,8 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
             CHECK_RESULT(cuCtxEnablePeerAccess(platformData.contexts[0]->getContext(), 0));
         }
     }
+    defaultQueue = shared_ptr<ComputeQueueImpl>(new CudaQueue(0));
+    currentQueue = defaultQueue;
     numAtoms = system.getNumParticles();
     paddedNumAtoms = TileSize*((numAtoms+TileSize-1)/TileSize);
     numAtomBlocks = (paddedNumAtoms+(TileSize-1))/TileSize;
@@ -340,6 +297,9 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     boxIsTriclinic = (boxVectors[0][1] != 0.0 || boxVectors[0][2] != 0.0 ||
                       boxVectors[1][0] != 0.0 || boxVectors[1][2] != 0.0 ||
                       boxVectors[2][0] != 0.0 || boxVectors[2][1] != 0.0);
+    for (int i = 0; i < system.getNumForces(); i++)
+        if (dynamic_cast<const MonteCarloFlexibleBarostat*>(&system.getForce(i)) != NULL)
+            boxIsTriclinic = true;
     if (boxIsTriclinic) {
         compilationDefines["APPLY_PERIODIC_TO_DELTA(delta)"] =
             "{"
@@ -434,21 +394,23 @@ void CudaContext::initialize() {
     ContextSelector selector(*this);
     string errorMessage = "Error initializing Context";
     int numEnergyBuffers = max(numThreadBlocks*ThreadBlockSize, nonbonded->getNumEnergyBuffers());
+    int multiprocessors;
+    CHECK_RESULT2(cuDeviceGetAttribute(&multiprocessors, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device), "Error checking GPU properties");
     if (useDoublePrecision) {
         energyBuffer.initialize<double>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<double>(*this, 1, "energySum");
+        energySum.initialize<double>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*4, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(double), 0));
     }
     else if (useMixedPrecision) {
         energyBuffer.initialize<double>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<double>(*this, 1, "energySum");
+        energySum.initialize<double>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*4, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(double), 0));
     }
     else {
         energyBuffer.initialize<float>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<float>(*this, 1, "energySum");
+        energySum.initialize<float>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*6, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(float), 0));
     }
@@ -477,6 +439,10 @@ void CudaContext::initialize() {
 
 void CudaContext::initializeContexts() {
     getPlatformData().initializeContexts(system);
+}
+
+FFT3D CudaContext::createFFT(int xsize, int ysize, int zsize, bool realToComplex) {
+    return FFT3D(new CudaFFT3D(*this, xsize, ysize, zsize, realToComplex));
 }
 
 void CudaContext::setAsCurrent() {
@@ -553,14 +519,20 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
     src << source << endl;
     
     // Determine what architecture to compile for.
+
+    int maxCompilerArchitecture;
+#if CUDA_VERSION < 11020
+    // CUDA versions before 11.2 can't query the compiler to see what it supports.
     
-    string compileArchitecture;
-    if (hasCompilerKernel) {
-        int maxCompilerArchitecture = compilerKernel.getAs<CudaCompilerKernel>().getMaxSupportedArchitecture();
-        compileArchitecture = intToString(min(gpuArchitecture, maxCompilerArchitecture));
-    }
-    else
-        compileArchitecture = intToString(gpuArchitecture);
+    maxCompilerArchitecture = 75;
+#else
+    int numArchs;
+    CHECK_NVRTC_RESULT(nvrtcGetNumSupportedArchs(&numArchs), "Error querying supported architectures");
+    vector<int> archs(numArchs);
+    CHECK_NVRTC_RESULT(nvrtcGetSupportedArchs(archs.data()), "Error querying supported architectures");
+    maxCompilerArchitecture = archs.back();
+#endif
+    string compileArchitecture = intToString(min(gpuArchitecture, maxCompilerArchitecture));
 
     // See whether we already have PTX for this kernel cached.
 
@@ -579,31 +551,51 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
     if (cuModuleLoad(&module, cacheFile.str().c_str()) == CUDA_SUCCESS)
         return module;
 
-    // Select names for the various temporary files.
+    // Select a name for the output file.
 
     stringstream tempFileName;
     tempFileName << "openmmTempKernel" << this; // Include a pointer to this context as part of the filename to avoid collisions.
-#ifdef WIN32
-    tempFileName << "_" << GetCurrentProcessId();
-#else
-    tempFileName << "_" << getpid();
-#endif
-    string inputFile = (tempDir+tempFileName.str()+".cu");
+    tempFileName << "_" << this_thread::get_id();
     string outputFile = (tempDir+tempFileName.str()+".ptx");
-    string logFile = (tempDir+tempFileName.str()+".log");
-    int res = 0;
 
-    // If the runtime compiler plugin is available, use it.
-
-    if (hasCompilerKernel) {
-        string ptx = compilerKernel.getAs<CudaCompilerKernel>().createModule(src.str(), "-arch=compute_"+compileArchitecture+" "+options, *this);
+    // Split the command line flags into an array of options.
+    
+    string flags = "-arch=compute_"+compileArchitecture+" "+options;
+    stringstream flagsStream(flags);
+    string flag;
+    vector<string> splitFlags;
+    while (flagsStream >> flag)
+        splitFlags.push_back(flag);
+    int numOptions = splitFlags.size();
+    vector<const char*> optionsVec(numOptions);
+    for (int i = 0; i < numOptions; i++)
+        optionsVec[i] = &splitFlags[i][0];
+    
+    // Compile the program to PTX.
+    
+    nvrtcProgram program;
+    CHECK_NVRTC_RESULT(nvrtcCreateProgram(&program, src.str().c_str(), NULL, 0, NULL, NULL), "Error creating program");
+    try {
+        nvrtcResult result = nvrtcCompileProgram(program, optionsVec.size(), &optionsVec[0]);
+        if (result != NVRTC_SUCCESS) {
+            size_t logSize;
+            nvrtcGetProgramLogSize(program, &logSize);
+            vector<char> log(logSize);
+            nvrtcGetProgramLog(program, &log[0]);
+            throw OpenMMException("Error compiling program: "+string(&log[0]));
+        }
+        size_t ptxSize;
+        nvrtcGetPTXSize(program, &ptxSize);
+        vector<char> ptx(ptxSize);
+        nvrtcGetPTX(program, &ptx[0]);
+        nvrtcDestroyProgram(&program);
 
         // If possible, write the PTX out to a temporary file so we can cache it for later use.
 
         bool wroteCache = false;
         try {
             ofstream out(outputFile.c_str());
-            out << ptx;
+            out << string(&ptx[0]);
             out.close();
             if (!out.fail())
                 wroteCache = true;
@@ -618,57 +610,23 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
             return module;
         }
     }
-    else {
-        // Write out the source to a temporary file.
-
-        ofstream out(inputFile.c_str());
-        out << src.str();
-        out.close();
-#ifdef WIN32
-#ifdef _DEBUG
-        string command = compiler+" --ptx -G -g --machine "+bits+" -arch=sm_"+compileArchitecture+" -o "+outputFile+" "+options+" "+inputFile+" 2> "+logFile;
-#else
-        string command = compiler+" --ptx -lineinfo --machine "+bits+" -arch=sm_"+compileArchitecture+" -o "+outputFile+" "+options+" "+inputFile+" 2> "+logFile;
-#endif
-        res = executeInWindows(command);
-#else
-        string command = compiler+" --ptx --machine "+bits+" -arch=sm_"+compileArchitecture+" -o \""+outputFile+"\" "+options+" \""+inputFile+"\" 2> \""+logFile+"\"";
-        res = std::system(command.c_str());
-#endif
+    catch (...) {
+        nvrtcDestroyProgram(&program);
+        throw;
     }
     try {
-        if (res != 0) {
-            // Load the error log.
-
-            stringstream error;
-            error << "Error launching CUDA compiler: " << res;
-            ifstream log(logFile.c_str());
-            if (log.is_open()) {
-                string line;
-                while (!log.eof()) {
-                    getline(log, line);
-                    error << '\n' << line;
-                }
-                log.close();
-            }
-            throw OpenMMException(error.str());
-        }
         CUresult result = cuModuleLoad(&module, outputFile.c_str());
         if (result != CUDA_SUCCESS) {
             std::stringstream m;
             m<<"Error loading CUDA module: "<<getErrorString(result)<<" ("<<result<<")";
             throw OpenMMException(m.str());
         }
-        remove(inputFile.c_str());
         if (rename(outputFile.c_str(), cacheFile.str().c_str()) != 0)
             remove(outputFile.c_str());
-        remove(logFile.c_str());
         return module;
     }
     catch (...) {
-        remove(inputFile.c_str());
         remove(outputFile.c_str());
-        remove(logFile.c_str());
         throw;
     }
 }
@@ -684,16 +642,23 @@ CUfunction CudaContext::getKernel(CUmodule& module, const string& name) {
     return function;
 }
 
+vector<ComputeContext*> CudaContext::getAllContexts() {
+    vector<ComputeContext*> result;
+    for (CudaContext* c : platformData.contexts)
+        result.push_back(c);
+    return result;
+}
+
+double& CudaContext::getEnergyWorkspace() {
+    return platformData.contextEnergy[contextIndex];
+}
+
+ComputeQueue CudaContext::createQueue() {
+    return shared_ptr<ComputeQueueImpl>(new CudaQueue());
+}
+
 CUstream CudaContext::getCurrentStream() {
-    return currentStream;
-}
-
-void CudaContext::setCurrentStream(CUstream stream) {
-    currentStream = stream;
-}
-
-void CudaContext::restoreDefaultStream() {
-    setCurrentStream(0);
+    return dynamic_cast<CudaQueue*>(currentQueue.get())->getStream();
 }
 
 CudaArray* CudaContext::createArray() {
@@ -702,6 +667,10 @@ CudaArray* CudaContext::createArray() {
 
 ComputeEvent CudaContext::createEvent() {
     return shared_ptr<ComputeEventImpl>(new CudaEvent(*this));
+}
+
+ComputeSort CudaContext::createSort(ComputeSortImpl::SortTrait* trait, unsigned int length, bool uniform) {
+    return shared_ptr<ComputeSortImpl>(new CudaSort(*this, trait, length, uniform));
 }
 
 ComputeProgram CudaContext::compileProgram(const std::string source, const std::map<std::string, std::string>& defines) {
@@ -732,7 +701,7 @@ void CudaContext::executeKernel(CUfunction kernel, void** arguments, int threads
     if (blockSize == -1)
         blockSize = ThreadBlockSize;
     int gridSize = std::min((threads+blockSize-1)/blockSize, numThreadBlocks);
-    CUresult result = cuLaunchKernel(kernel, gridSize, 1, 1, blockSize, 1, 1, sharedSize, currentStream, arguments, NULL);
+    CUresult result = cuLaunchKernel(kernel, gridSize, 1, 1, blockSize, 1, 1, sharedSize, getCurrentStream(), arguments, NULL);
     if (result != CUDA_SUCCESS) {
         stringstream str;
         str<<"Error invoking kernel: "<<getErrorString(result)<<" ("<<result<<")";
@@ -819,12 +788,18 @@ double CudaContext::reduceEnergy() {
     int bufferSize = energyBuffer.getSize();
     int workGroupSize  = 512;
     void* args[] = {&energyBuffer.getDevicePointer(), &energySum.getDevicePointer(), &bufferSize, &workGroupSize};
-    executeKernel(reduceEnergyKernel, args, workGroupSize, workGroupSize, workGroupSize*energyBuffer.getElementSize());
+    executeKernel(reduceEnergyKernel, args, workGroupSize*energySum.getSize(), workGroupSize, workGroupSize*energyBuffer.getElementSize());
     energySum.download(pinnedBuffer);
-    if (getUseDoublePrecision() || getUseMixedPrecision())
-        return *((double*) pinnedBuffer);
-    else
-        return *((float*) pinnedBuffer);
+    double result = 0;
+    if (getUseDoublePrecision() || getUseMixedPrecision()) {
+        for (int i = 0; i < energySum.getSize(); i++)
+            result += ((double*) pinnedBuffer)[i];
+    }
+    else {
+        for (int i = 0; i < energySum.getSize(); i++)
+            result += ((float*) pinnedBuffer)[i];
+    }
+    return result;
 }
 
 void CudaContext::setCharges(const vector<double>& charges) {
@@ -893,4 +868,11 @@ vector<int> CudaContext::getDevicePrecedence() {
     }
 
     return precedence;
+}
+
+unsigned int CudaContext::getEventFlags() {
+    unsigned int flags = CU_EVENT_DISABLE_TIMING;
+    if (useBlockingSync)
+        flags += CU_EVENT_BLOCKING_SYNC;
+    return flags;
 }

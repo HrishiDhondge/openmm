@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -80,6 +80,10 @@ KernelImpl* ReferenceKernelFactory::createKernelImpl(std::string name, const Pla
         return new ReferenceCalcCustomCompoundBondForceKernel(name, platform);
     if (name == CalcCustomCVForceKernel::Name())
         return new ReferenceCalcCustomCVForceKernel(name, platform);
+    if (name == CalcATMForceKernel::Name())
+        return new ReferenceCalcATMForceKernel(name, platform);
+    if (name == CalcCustomCPPForceKernel::Name())
+        return new ReferenceCalcCustomCPPForceKernel(name, platform);
     if (name == CalcRMSDForceKernel::Name())
         return new ReferenceCalcRMSDForceKernel(name, platform);
     if (name == CalcCustomManyParticleForceKernel::Name())
@@ -90,8 +94,6 @@ KernelImpl* ReferenceKernelFactory::createKernelImpl(std::string name, const Pla
         return new ReferenceIntegrateVerletStepKernel(name, platform, data);
     if (name == IntegrateNoseHooverStepKernel::Name())
         return new ReferenceIntegrateNoseHooverStepKernel(name, platform, data);
-    if (name == IntegrateLangevinStepKernel::Name())
-        return new ReferenceIntegrateLangevinStepKernel(name, platform, data);
     if (name == IntegrateLangevinMiddleStepKernel::Name())
         return new ReferenceIntegrateLangevinMiddleStepKernel(name, platform, data);
     if (name == IntegrateBrownianStepKernel::Name())
@@ -102,6 +104,8 @@ KernelImpl* ReferenceKernelFactory::createKernelImpl(std::string name, const Pla
         return new ReferenceIntegrateVariableVerletStepKernel(name, platform, data);
     if (name == IntegrateCustomStepKernel::Name())
         return new ReferenceIntegrateCustomStepKernel(name, platform, data);
+    if (name == IntegrateDPDStepKernel::Name())
+        return new ReferenceIntegrateDPDStepKernel(name, platform, data);
     if (name == ApplyAndersenThermostatKernel::Name())
         return new ReferenceApplyAndersenThermostatKernel(name, platform);
     if (name == ApplyMonteCarloBarostatKernel::Name())

@@ -17,7 +17,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         initialState = simulation.context.getState(getPositions=True, getVelocities=True)
@@ -74,7 +74,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         initialState = simulation.context.getState(getPositions=True, getVelocities=True)
@@ -107,7 +107,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         self.assertEqual(0, simulation.currentStep)
@@ -130,7 +130,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         self.assertEqual(0, simulation.currentStep)
@@ -179,7 +179,7 @@ class TestSimulation(unittest.TestCase):
                 
             def describeNextReport(self, simulation):
                 steps = self.interval - simulation.currentStep%self.interval
-                return (steps, True, False, False, False, self.periodic)
+                return {'steps':steps, 'periodic':self.periodic, 'include':['positions']}
         
             def report(self, simulation, state):
                 state2 = simulation.context.getState(getPositions=True, enforcePeriodicBox=self.periodic)
@@ -196,6 +196,33 @@ class TestSimulation(unittest.TestCase):
         # Run for a little while and make sure the reporters don't find any problems.
         
         simulation.step(500)
+
+    def testMinimizationReporter(self):
+        """Test invoking a reporter during minimization."""
+        pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+        ff = ForceField('amber99sb.xml', 'tip3p.xml')
+        system = ff.createSystem(pdb.topology)
+        integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
+        simulation = Simulation(pdb.topology, system, integrator)
+        simulation.context.setPositions(pdb.positions)
+
+        class Reporter(MinimizationReporter):
+            lastIteration = -1
+            error = False
+
+            def report(self, iteration, x, grad, args):
+                if iteration != self.lastIteration+1:
+                    self.error = True
+                self.lastIteration = iteration
+                if iteration == 10:
+                    return True
+                if iteration > 10:
+                    self.error = True
+                return False
+
+        reporter = Reporter()
+        simulation.minimizeEnergy(reporter=reporter)
+        assert not reporter.error
 
 
 if __name__ == '__main__':

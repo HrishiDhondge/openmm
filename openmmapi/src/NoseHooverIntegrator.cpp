@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2019-2020 Stanford University and the Authors.      *
+ * Portions copyright (c) 2019-2024 Stanford University and the Authors.      *
  * Authors: Andreas Krämer and Andrew C. Simmonett                            *
  * Contributors: Peter Eastman                                                *
  *                                                                            *
@@ -47,19 +47,13 @@ using namespace OpenMM;
 using std::string;
 using std::vector;
 
-NoseHooverIntegrator::NoseHooverIntegrator(double stepSize):
-    forcesAreValid(false),
-    hasSubsystemThermostats_(true)
-{
+NoseHooverIntegrator::NoseHooverIntegrator(double stepSize) : hasSubsystemThermostats_(true) {
     setStepSize(stepSize);
     setConstraintTolerance(1e-5);
     setMaximumPairDistance(0.0);
 }
 NoseHooverIntegrator::NoseHooverIntegrator(double temperature, double collisionFrequency, double stepSize,
-                                           int chainLength, int numMTS, int numYoshidaSuzuki) : 
-    forcesAreValid(false),
-    hasSubsystemThermostats_(false) {
-
+                                           int chainLength, int numMTS, int numYoshidaSuzuki) : hasSubsystemThermostats_(false) {
     setStepSize(stepSize);
     setConstraintTolerance(1e-5);
     setMaximumPairDistance(0.0);
@@ -74,7 +68,7 @@ int NoseHooverIntegrator::addThermostat(double temperature, double collisionFreq
         throw OpenMMException("NoseHooverIntegrator: temperature cannot be negative");
     if (collisionFrequency <= 0)
         throw OpenMMException("NoseHooverIntegrator: collisionFrequency must be positive");
-    if (collisionFrequency < 0)
+    if (chainLength <= 0)
         throw OpenMMException("NoseHooverIntegrator: chainLength must be positive");
     if (numMTS < 0)
         throw OpenMMException("NoseHooverIntegrator: numMTS must be positive");
@@ -98,7 +92,7 @@ int NoseHooverIntegrator::addSubsystemThermostat(const std::vector<int>& thermos
         throw OpenMMException("NoseHooverIntegrator: collisionFrequency must be positive");
     if (relativeCollisionFrequency <= 0)
         throw OpenMMException("NoseHooverIntegrator: relativeCollisionFrequency must be positive");
-    if (collisionFrequency < 0)
+    if (chainLength <= 0)
         throw OpenMMException("NoseHooverIntegrator: chainLength must be positive");
     if (numMTS < 0)
         throw OpenMMException("NoseHooverIntegrator: numMTS must be positive");
@@ -178,18 +172,26 @@ void NoseHooverIntegrator::initializeThermostats(const System &system) {
             }
         }
 
-        // remove 3 degrees of freedom from thermostats that act on absolute motions
-        int numForces = system.getNumForces();
-        if (thermostatedPairs.size() == 0){
-            for (int forceNum = 0; forceNum < numForces; ++forceNum) {
-                if (dynamic_cast<const CMMotionRemover*>(&system.getForce(forceNum))) nDOF -= 3;
-            }
-        }
-
         // set number of DoFs for chain 
         thermostat.setNumDegreesOfFreedom(nDOF);
     }
 
+    // If there is a CMMotionRemover, remove 3 degrees of freedom from the largest thermostat.
+    for (int force = 0; force < system.getNumForces(); ++force) {
+        if (dynamic_cast<const CMMotionRemover*>(&system.getForce(force))) {
+            int largest = 0;
+            int largestSize = noseHooverChains[0].getThermostatedAtoms().size() + noseHooverChains[0].getThermostatedPairs().size();
+            for (int chain = 1; chain < noseHooverChains.size(); chain++) {
+                int size = noseHooverChains[chain].getThermostatedAtoms().size() + noseHooverChains[chain].getThermostatedPairs().size();
+                if (size > largestSize) {
+                    largest = chain;
+                    largestSize = size;
+                }
+            }
+            noseHooverChains[largest].setNumDegreesOfFreedom(noseHooverChains[largest].getNumDegreesOfFreedom()-3);
+            break;
+        }
+    }
 
     for (int chain1 = 0; chain1 < noseHooverChains.size(); ++chain1){
         const auto& nhc = noseHooverChains[chain1];
@@ -286,7 +288,6 @@ void NoseHooverIntegrator::setRelativeCollisionFrequency(double frequency, int c
 }
 
 double NoseHooverIntegrator::computeKineticEnergy() {
-    forcesAreValid = false;
     double kE = 0.0;
     if(noseHooverChains.size() > 0) {
         for (const auto &nhc: noseHooverChains){
@@ -321,7 +322,6 @@ void NoseHooverIntegrator::initialize(ContextImpl& contextRef) {
     owner = &contextRef.getOwner();
     kernel = context->getPlatform().createKernel(IntegrateNoseHooverStepKernel::Name(), contextRef);
     kernel.getAs<IntegrateNoseHooverStepKernel>().initialize(contextRef.getSystem(), *this);
-    forcesAreValid = false;
 
     // check for drude particles and build the Nose-Hoover Chains
     for (auto& thermostat: noseHooverChains){
@@ -359,10 +359,9 @@ void NoseHooverIntegrator::step(int steps) {
     if (context == NULL)
         throw OpenMMException("This Integrator is not bound to a context!");
     for (int i = 0; i < steps; ++i) {
-        if(context->updateContextState())
-            forcesAreValid = false;
+        context->updateContextState();
         context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
-        kernel.getAs<IntegrateNoseHooverStepKernel>().execute(*context, *this, forcesAreValid);
+        kernel.getAs<IntegrateNoseHooverStepKernel>().execute(*context, *this);
     }
 }
 

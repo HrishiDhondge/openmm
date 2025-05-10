@@ -6,9 +6,9 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2022 Stanford University and the Authors.
+Portions copyright (c) 2012-2025 Stanford University and the Authors.
 Authors: Peter Eastman, Mark Friedrichs
-Contributors:
+Contributors: Evan Pretti
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
@@ -57,11 +57,17 @@ def _getDataDirectories():
     if _dataDirectories is None:
         _dataDirectories = [os.path.join(os.path.dirname(__file__), 'data')]
         try:
-            from pkg_resources import iter_entry_points
-            for entry in iter_entry_points(group='openmm.forcefielddir'):
+            from importlib_metadata import entry_points
+        except:
+            try:
+                from importlib.metadata import entry_points
+            except:
+                pass
+        try:
+            for entry in entry_points().select(group='openmm.forcefielddir'):
                 _dataDirectories.append(entry.load()())
         except:
-            pass # pkg_resources is not installed
+            pass # importlib_metadata is not installed
     return _dataDirectories
 
 def _convertParameterToNumber(param):
@@ -298,6 +304,8 @@ class ForceField(object):
                         template.overrideLevel = int(residue.attrib['override'])
                     if 'rigidWater' in residue.attrib:
                         template.rigidWater = (residue.attrib['rigidWater'].lower() == 'true')
+                    for key in residue.attrib:
+                        template.attributes[key] = residue.attrib[key]
                     atomIndices = template.atomIndices
                     for ia, atom in enumerate(residue.findall('Atom')):
                         params = {}
@@ -342,6 +350,8 @@ class ForceField(object):
                     else:
                         numResidues = 1
                     patchData = ForceField._PatchData(patchName, numResidues)
+                    for key in patch.attrib:
+                        patchData.attributes[key] = patch.attrib[key]
                     for atom in patch.findall('AddAtom'):
                         params = {}
                         for key in atom.attrib:
@@ -387,9 +397,11 @@ class ForceField(object):
                     for bond in patch.findall('RemoveExternalBond'):
                         atom = ForceField._PatchAtomData(bond.attrib['atomName'])
                         patchData.deletedExternalBonds.append(atom)
-                    atomIndices = dict((atom.name, i) for i, atom in enumerate(patchData.addedAtoms[atomDescription.residue]+patchData.changedAtoms[atomDescription.residue]))
+                    # The following three lines are only correct for single residue patches.  Multi-residue patches with
+                    # virtual sites currently don't work correctly.  See issue #2848.
+                    atomIndices = dict((atom.name, i) for i, atom in enumerate(patchData.addedAtoms[0]+patchData.changedAtoms[0]))
                     for site in patch.findall('VirtualSite'):
-                        patchData.virtualSites[atomDescription.residue].append(ForceField._VirtualSiteData(site, atomIndices))
+                        patchData.virtualSites[0].append(ForceField._VirtualSiteData(site, atomIndices))
                     for residue in patch.findall('ApplyToResidue'):
                         name = residue.attrib['name']
                         if ':' in name:
@@ -430,6 +442,11 @@ class ForceField(object):
         """Register a new atom type."""
         name = parameters['name']
         if name in self._atomTypes:
+            #  allow multiple registrations of the same atom type provided the definitions are identical
+            existing = self._atomTypes[name]
+            elementsMatch = ((existing.element is None and 'element' not in parameters) or (existing.element is not None and 'element' in parameters and existing.element.symbol == parameters['element']))
+            if existing.atomClass == parameters['class'] and existing.mass == float(parameters['mass']) and elementsMatch:
+                return
             raise ValueError('Found multiple definitions for atom type: '+name)
         atomClass = parameters['class']
         mass = _convertParameterToNumber(parameters['mass'])
@@ -475,6 +492,7 @@ class ForceField(object):
 
     def registerPatch(self, patch):
         """Register a new patch that can be applied to templates."""
+        patch.index = len(self._patches)
         self._patches[patch.name] = patch
 
     def registerTemplatePatch(self, residue, patch, patchResidueIndex):
@@ -486,14 +504,14 @@ class ForceField(object):
     def registerScript(self, script):
         """Register a new script to be executed after building the System."""
         self._scripts.append(script)
-    
+
     def registerTemplateMatcher(self, matcher):
         """Register an object that can override the default logic for matching templates to residues.
 
         A template matcher is a callable object that can be invoked as::
-        
+
             template = f(forcefield, residue, bondedToAtom, ignoreExternalBonds, ignoreExtraParticles)
-        
+
         where ``forcefield`` is the ForceField invoking it, ``residue`` is an openmm.app.Residue object,
         ``bondedToAtom[i]`` is the set of atoms bonded to atom index i, and ``ignoreExternalBonds`` and
         ``ignoreExtraParticles`` indicate whether external bonds and extra particules should be considered
@@ -502,7 +520,7 @@ class ForceField(object):
         It should return a _TemplateData object that matches the residue.  Alternatively it may return
         None, in which case the standard logic will be used to find a template for the residue.
 
-        .. CAUTION:: This method is experimental, and its API is subject to change.        
+        .. CAUTION:: This method is experimental, and its API is subject to change.
         """
         self._templateMatchers.append(matcher)
 
@@ -625,9 +643,9 @@ class ForceField(object):
             self.isAngleConstrained = []
             self.constraints = {}
             self.bondedToAtom = [set() for _ in self.atoms]
-    
+
             # Record which atoms are bonded to each other atom
-    
+
             for i in range(len(self.bonds)):
                 bond = self.bonds[i]
                 self.bondedToAtom[bond.atom1].add(bond.atom2)
@@ -668,6 +686,7 @@ class ForceField(object):
             self.externalBonds = []
             self.overrideLevel = 0
             self.rigidWater = True
+            self.attributes = {}
 
         def getAtomIndexByName(self, atom_name):
             """Look up an atom index by atom name, providing a helpful error message if not found."""
@@ -785,6 +804,17 @@ class ForceField(object):
             else:
                 self.excludeWith = self.atoms[0]
 
+        def __eq__(self, other):
+            if not isinstance(other, ForceField._VirtualSiteData):
+                return False
+            if self.type != other.type or self.index != other.index or self.atoms != other.atoms or self.excludeWith != other.excludeWith:
+                return False
+            if self.type in ('average2', 'average3', 'outOfPlane'):
+                return self.weights == other.weights
+            elif self.type == 'localCoords':
+                return self.originWeights == other.originWeights and self.xWeights == other.xWeights and self.yWeights == other.yWeights and self.localPos == other.localPos
+            return False
+
     class _PatchData(object):
         """Inner class used to encapsulate data about a patch definition."""
         def __init__(self, name, numResidues):
@@ -799,6 +829,11 @@ class ForceField(object):
             self.deletedExternalBonds = []
             self.allAtomNames = set()
             self.virtualSites = [[] for i in range(numResidues)]
+            self.attributes = {}
+            self.index = None
+
+        def __lt__(self, other):
+            return self.index < other.index
 
         def createPatchedTemplates(self, templates):
             """Apply this patch to a set of templates, creating new modified ones."""
@@ -836,6 +871,7 @@ class ForceField(object):
                         newSite = deepcopy(site)
                         newSite.index = indexMap[site.index]
                         newSite.atoms = [indexMap[i] for i in site.atoms]
+                        newSite.excludeWith = indexMap[site.excludeWith]
                         newTemplate.virtualSites.append(newSite)
 
                 # Build the lists of bonds and external bonds.
@@ -1034,7 +1070,7 @@ class ForceField(object):
         bondedToAtom = [sorted(b) for b in bondedToAtom]
         return bondedToAtom
 
-    def getUnmatchedResidues(self, topology):
+    def getUnmatchedResidues(self, topology, residueTemplates=dict()):
         """Return a list of Residue objects from specified topology for which no forcefield templates are available.
 
         .. CAUTION:: This method is experimental, and its API is subject to change.
@@ -1043,6 +1079,12 @@ class ForceField(object):
         ----------
         topology : Topology
             The Topology whose residues are to be checked against the forcefield residue templates.
+        residueTemplates : dict=dict()
+            Specifies which template to use for particular residues.  The keys should be Residue
+            objects from the Topology, and the values should be the names of the templates to
+            use for them.  This is useful when a ForceField contains multiple templates that
+            can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
 
         Returns
         -------
@@ -1056,8 +1098,13 @@ class ForceField(object):
         bondedToAtom = self._buildBondedToAtomList(topology)
         unmatched_residues = list() # list of unmatched residues
         for res in topology.residues():
-            # Attempt to match one of the existing templates.
-            [template, matches] = self._getResidueTemplateMatches(res, bondedToAtom)
+            if res in residueTemplates:
+                # Make sure the specified template matches.
+                template = self._templates[residueTemplates[res]]
+                matches = compiled.matchResidueToTemplate(res, template, bondedToAtom, False, False)
+            else:
+                # Attempt to match one of the existing templates.
+                [template, matches] = self._getResidueTemplateMatches(res, bondedToAtom)
             if matches is None:
                 # No existing templates match.
                 unmatched_residues.append(res)
@@ -1086,12 +1133,12 @@ class ForceField(object):
         # Find the template matching each residue, compiling a list of residues for which no templates are available.
         bondedToAtom = self._buildBondedToAtomList(topology)
         templates = list() # list of templates matching the corresponding residues
-        for res in topology.residues():
+        for residue in topology.residues():
             # Attempt to match one of the existing templates.
-            [template, matches] = self._getResidueTemplateMatches(res, bondedToAtom, ignoreExternalBonds=ignoreExternalBonds)
+            [template, matches] = self._getResidueTemplateMatches(residue, bondedToAtom, ignoreExternalBonds=ignoreExternalBonds)
             # Raise an exception if we have found no templates that match.
             if matches is None:
-                raise ValueError('No template found for residue %d (%s).  %s' % (res.index+1, res.name, _findMatchErrors(self, res)))
+                raise ValueError('No template found for chainid <%s> resid <%s> resname <%s> (residue index within topology %d).\n%s' % (residue.chain.id, residue.id, residue.name, residue.index, _findMatchErrors(self, residue)))
             else:
                 templates.append(template)
 
@@ -1171,11 +1218,11 @@ class ForceField(object):
             their total mass the same.  If rigidWater is used to make water molecules
             rigid, then water hydrogens are not altered.
         residueTemplates : dict=dict()
-            Key: Topology Residue object
-            Value: string, name of _TemplateData residue template object to use for (Key) residue.
-            This allows user to specify which template to apply to particular Residues
-            in the event that multiple matching templates are available (e.g Fe2+ and Fe3+
-            templates in the ForceField for a monoatomic iron ion in the topology).
+            Specifies which template to use for particular residues.  The keys should be Residue
+            objects from the Topology, and the values should be the names of the templates to
+            use for them.  This is useful when a ForceField contains multiple templates that
+            can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
         ignoreExternalBonds : boolean=False
             If true, ignore external bonds when matching residues to templates.  This is
             useful when the Topology represents one piece of a larger molecule, so chains are
@@ -1213,7 +1260,7 @@ class ForceField(object):
         for res in topology.residues():
             if res.name == 'HOH':
                 # Determine whether this should be a rigid water.
-    
+
                 if rigidWater is None:
                     rigidResidue[res.index] = templateForResidue[res.index].rigidWater
                 elif rigidWater:
@@ -1424,7 +1471,7 @@ class ForceField(object):
                             # We successfully generated a residue template.  Break out of the for loop.
                             break
             if matches is None:
-                raise ValueError('No template found for residue %d (%s).  %s' % (res.index+1, res.name, _findMatchErrors(self, res)))
+                raise ValueError('No template found for residue %d (%s).  %s  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#template' % (res.index+1, res.name, _findMatchErrors(self, res)))
             else:
                 if recordParameters:
                     data.recordMatchedAtomParameters(res, template, matches)
@@ -1563,7 +1610,7 @@ def _applyPatchesToMatchResidues(forcefield, data, residues, templateForResidue,
     patchedTemplates = {}
     for name, template in forcefield._templates.items():
         if name in forcefield._templatePatches:
-            patches = [forcefield._patches[patchName] for patchName, patchResidueIndex in forcefield._templatePatches[name] if forcefield._patches[patchName].numResidues == 1]
+            patches = sorted([forcefield._patches[patchName] for patchName, patchResidueIndex in forcefield._templatePatches[name] if forcefield._patches[patchName].numResidues == 1])
             if len(patches) > 0:
                 newTemplates = []
                 patchedTemplates[name] = newTemplates
@@ -2057,6 +2104,11 @@ class HarmonicAngleGenerator(object):
             generator.registerAngle(angle.attrib)
 
     def createForce(self, sys, data, nonbondedMethod, nonbondedCutoff, args):
+        pass
+
+    def postprocessSystem(self, sys, data, args):
+        # We need to wait until after all bonds have been added so their lengths will be set correctly.
+
         existing = [f for f in sys.getForces() if type(f) == mm.HarmonicAngleForce]
         if len(existing) == 0:
             force = mm.HarmonicAngleForce()
@@ -2340,6 +2392,7 @@ class CMAPTorsionGenerator(object):
             ff.registerGenerator(generator)
         else:
             generator = existing[0]
+        mapOffset = len(generator.maps)
         for map in element.findall('Map'):
             values = [float(x) for x in map.text.split()]
             size = sqrt(len(values))
@@ -2349,7 +2402,7 @@ class CMAPTorsionGenerator(object):
         for torsion in element.findall('Torsion'):
             types = ff._findAtomTypes(torsion.attrib, 5)
             if None not in types:
-                generator.torsions.append(CMAPTorsion(types, int(torsion.attrib['map'])))
+                generator.torsions.append(CMAPTorsion(types, int(torsion.attrib['map']) + mapOffset))
 
     def createForce(self, sys, data, nonbondedMethod, nonbondedCutoff, args):
         existing = [f for f in sys.getForces() if type(f) == mm.CMAPTorsionForce]
@@ -2503,20 +2556,38 @@ class LennardJonesGenerator(object):
 
     def __init__(self, forcefield, lj14scale, useDispersionCorrection):
         self.ff = forcefield
-        self.nbfixTypes = {}
+        self.nbfixParameters = []
+        self.nbfixTypes1 = defaultdict(set)
+        self.nbfixTypes2 = defaultdict(set)
         self.lj14scale = lj14scale
         self.useDispersionCorrection = useDispersionCorrection
         self.ljTypes = ForceField._AtomTypeParameters(forcefield, 'LennardJonesForce', 'Atom', ('sigma', 'epsilon'))
 
     def registerNBFIX(self, parameters):
         types = self.ff._findAtomTypes(parameters, 2)
+
         if None not in types:
+            sigma = _convertParameterToNumber(parameters['sigma'])
+            epsilon = _convertParameterToNumber(parameters['epsilon'])
+
+            # Retrieve the index of nbfixParameters into which this sigma and
+            # epsilon will be stored, then register this index with the atom
+            # types that should have this sigma and epsilon applied.
+            nbfixIndex = len(self.nbfixParameters)
+            self.nbfixParameters.append([sigma, epsilon])
             for type1 in types[0]:
-                for type2 in types[1]:
-                    epsilon = _convertParameterToNumber(parameters['epsilon'])
-                    sigma = _convertParameterToNumber(parameters['sigma'])
-                    self.nbfixTypes[(type1, type2)] = [sigma, epsilon]
-                    self.nbfixTypes[(type2, type1)] = [sigma, epsilon]
+                self.nbfixTypes1[type1].add(nbfixIndex)
+            for type2 in types[1]:
+                self.nbfixTypes2[type2].add(nbfixIndex)
+
+    def getNBFIX(self, type1, type2):
+        nbfixIndices = (self.nbfixTypes1[type1] & self.nbfixTypes2[type2]) | (self.nbfixTypes2[type1] & self.nbfixTypes1[type2])
+        if nbfixIndices:
+            if len(nbfixIndices) > 1:
+                raise ValueError('Multiple NBFixPair entries match atom types %s-%s.' % (type1, type2))
+            return self.nbfixParameters[nbfixIndices.pop()]
+        else:
+            return None
 
     def registerLennardJones(self, parameters):
         self.ljTypes.registerAtom(parameters)
@@ -2555,7 +2626,7 @@ class LennardJonesGenerator(object):
         # First derive the lookup tables.  We need to include entries for every type
         # that a) appears in the system and b) has unique parameters.
 
-        nbfixTypeSet = set().union(*self.nbfixTypes)
+        nbfixTypeSet = {t for nbfixTypes in (self.nbfixTypes1, self.nbfixTypes2) for t in nbfixTypes if nbfixTypes[t]}
         allTypes = set(data.atomType[atom] for atom in data.atoms)
         mergedTypes = []
         mergedTypeParams = []
@@ -2586,10 +2657,9 @@ class LennardJonesGenerator(object):
         bcoef = acoef[:]
         for m in range(numLjTypes):
             for n in range(numLjTypes):
-                pair = (mergedTypes[m], mergedTypes[n])
-                if pair in self.nbfixTypes:
-                    epsilon = self.nbfixTypes[pair][1]
-                    sigma = self.nbfixTypes[pair][0]
+                nbfix = self.getNBFIX(mergedTypes[m], mergedTypes[n])
+                if nbfix is not None:
+                    sigma, epsilon = nbfix
                     sigma6 = sigma**6
                     acoef[m+numLjTypes*n] = 4*epsilon*sigma6*sigma6
                     bcoef[m+numLjTypes*n] = 4*epsilon*sigma6
@@ -2659,10 +2729,9 @@ class LennardJonesGenerator(object):
                 a1 = data.atoms[p1]
                 a2 = data.atoms[p2]
                 if (p1,p2) not in skip and (p2,p1) not in skip:
-                    type1 = data.atomType[a1]
-                    type2 = data.atomType[a2]
-                    if (type1, type2) in self.nbfixTypes:
-                        sigma, epsilon = self.nbfixTypes[(type1, type2)]
+                    nbfix = self.getNBFIX(data.atomType[a1], data.atomType[a2])
+                    if nbfix is not None:
+                        sigma, epsilon = nbfix
                     else:
                         values1 = self.ljTypes.getAtomParameters(a1, data)
                         values2 = self.ljTypes.getAtomParameters(a2, data)
@@ -2970,8 +3039,9 @@ class CustomNonbondedGenerator(object):
         # Create the exclusions.
 
         bondIndices = _findBondsForExclusions(data, sys)
-        nonbonded = [f for f in sys.getForces() if isinstance(f, mm.CustomNonbondedForce)][0]
-        nonbonded.createExclusionsFromBonds(bondIndices, self.bondCutoff)
+        for f in sys.getForces():
+            if isinstance(f, mm.CustomNonbondedForce) and f.getEnergyFunction() == self.energy:
+                f.createExclusionsFromBonds(bondIndices, self.bondCutoff)
 
 parsers["CustomNonbondedForce"] = CustomNonbondedGenerator.parseElement
 
@@ -3484,14 +3554,11 @@ class AmoebaAngleGenerator(object):
                 angleList = []
                 angleList.append(float(angle.attrib['angle1']))
 
-                try:
+                if 'angle2' in angle.attrib:
                     angleList.append(float(angle.attrib['angle2']))
-                    try:
-                        angleList.append(float(angle.attrib['angle3']))
-                    except:
-                        pass
-                except:
-                    pass
+                if 'angle3' in angle.attrib:
+                    angleList.append(float(angle.attrib['angle3']))
+
                 generator.angle.append(angleList)
                 generator.k.append(float(angle.attrib['k']))
                 if 'inPlane' in angle.attrib:
@@ -3733,8 +3800,11 @@ class AmoebaOutOfPlaneBendGenerator(object):
     #=============================================================================================
 
     def createForce(self, sys, data, nonbondedMethod, nonbondedCutoff, args):
+        self._nonbondedMethod = nonbondedMethod
+        self._nonbondedCutoff = nonbondedCutoff
 
-        # get force
+    def postprocessSystem(self, sys, data, args):
+        # We need to wait until after all bonds have been added so their lengths will be set correctly.
 
         energy = """k*(theta^2 + %s*theta^3 + %s*theta^4 + %s*theta^5 + %s*theta^6);
                     theta = %.15g*pointangle(x2, y2, z2, x4, y4, z4, projx, projy, projz);
@@ -3857,12 +3927,12 @@ class AmoebaOutOfPlaneBendGenerator(object):
 
         for force in self.forceField._forces:
             if (force.__class__.__name__ == 'AmoebaAngleGenerator'):
-                force.createForcePostOpBendAngle(sys, data, nonbondedMethod, nonbondedCutoff, angles, args)
-                force.createForcePostOpBendInPlaneAngle(sys, data, nonbondedMethod, nonbondedCutoff, angles, args)
+                force.createForcePostOpBendAngle(sys, data, self._nonbondedMethod, self._nonbondedCutoff, angles, args)
+                force.createForcePostOpBendInPlaneAngle(sys, data, self._nonbondedMethod, self._nonbondedCutoff, angles, args)
 
         for force in self.forceField._forces:
             if (force.__class__.__name__ == 'AmoebaStretchBendGenerator'):
-                force.createForcePostAmoebaBondForce(sys, data, nonbondedMethod, nonbondedCutoff, angles, args)
+                force.createForcePostAmoebaBondForce(sys, data, self._nonbondedMethod, self._nonbondedCutoff, angles, args)
 
 parsers["AmoebaOutOfPlaneBendForce"] = AmoebaOutOfPlaneBendGenerator.parseElement
 
@@ -4672,7 +4742,6 @@ class AmoebaStretchBendGenerator(object):
                             k1, k2 = self.k1[i], self.k2[i]
                         else:
                             k1, k2 = self.k2[i], self.k1[i]
-                            
                         force.addBond((angle[0], angle[1], angle[2]), (bondAB, bondCB, angleDict['idealAngle']/radian, k1, k2))
 
                     break
@@ -4832,7 +4901,7 @@ class AmoebaVdwGenerator(object):
             force.addParticle(ivIndex, classToTypeMap[className], reduction)
 
         # Add pairs
-        
+
         for c1, c2, sigma, epsilon in self.pairs:
             force.addTypePair(classToTypeMap[c1], classToTypeMap[c2], sigma, epsilon)
 
@@ -4954,11 +5023,7 @@ class AmoebaMultipoleGenerator(object):
 
                 kStrings = [ 'kz', 'kx', 'ky' ]
                 for kString in kStrings:
-                    try:
-                        if (atom.attrib[kString]):
-                             kIndices.append(int(atom.attrib[kString]))
-                    except:
-                        pass
+                    kIndices.append(int(atom.attrib.get(kString,0)))
 
                 # set axis type based on k-Indices
 
@@ -5505,16 +5570,21 @@ class AmoebaWcaDispersionGenerator(object):
         #   <WcaDispersion class="1" radius="0.1855" epsilon="0.46024" />
         #   <WcaDispersion class="2" radius="0.191" epsilon="0.422584" />
 
-        generator = AmoebaWcaDispersionGenerator(element.attrib['epso'],
-                                                  element.attrib['epsh'],
-                                                  element.attrib['rmino'],
-                                                  element.attrib['rminh'],
-                                                  element.attrib['awater'],
-                                                  element.attrib['slevy'],
-                                                  element.attrib['dispoff'],
-                                                  element.attrib['shctd'])
-        forceField._forces.append(generator)
-        generator.params = ForceField._AtomTypeParameters(forceField, 'AmoebaWcaDispersionForce', 'WcaDispersion', ('radius', 'epsilon'))
+        existing = [f for f in forceField._forces if isinstance(f, AmoebaWcaDispersionGenerator)]
+        if len(existing) == 0:
+            generator = AmoebaWcaDispersionGenerator(element.attrib['epso'],
+                                                     element.attrib['epsh'],
+                                                     element.attrib['rmino'],
+                                                     element.attrib['rminh'],
+                                                     element.attrib['awater'],
+                                                     element.attrib['slevy'],
+                                                     element.attrib['dispoff'],
+                                                     element.attrib['shctd'])
+            forceField.registerGenerator(generator)
+            generator.params = ForceField._AtomTypeParameters(forceField, 'AmoebaWcaDispersionForce', 'WcaDispersion', ('radius', 'epsilon'))
+        else:
+            # Multiple <AmoebaWcaDispersionForce> tags were found, probably in different files.  Simply add more types to the existing one.
+            generator = existing[0]
         generator.params.parseDefinitions(element)
 
     #=========================================================================================
@@ -5737,10 +5807,17 @@ class AmoebaGeneralizedKirkwoodGenerator(object):
         #   <GeneralizedKirkwood type="1" charge="-0.22620" shct="0.79"  />
         #   <GeneralizedKirkwood type="2" charge="-0.15245" shct="0.72"  />
 
-        generator = AmoebaGeneralizedKirkwoodGenerator(forceField, element.attrib['solventDielectric'], element.attrib['soluteDielectric'],
-                                                        element.attrib['includeCavityTerm'],
-                                                        element.attrib['probeRadius'], element.attrib['surfaceAreaFactor'])
-        forceField._forces.append(generator)
+        existing = [f for f in forceField._forces if isinstance(f, AmoebaGeneralizedKirkwoodGenerator)]
+        if len(existing) == 0:
+            generator = AmoebaGeneralizedKirkwoodGenerator(forceField, element.attrib['solventDielectric'],
+                                                           element.attrib['soluteDielectric'],
+                                                           element.attrib['includeCavityTerm'],
+                                                           element.attrib['probeRadius'],
+                                                           element.attrib['surfaceAreaFactor'])
+            forceField.registerGenerator(generator)
+        else:
+            # Multiple <AmoebaGeneralizedKirkwoodFprce> tags were found, probably in different files.  Simply add more types to the existing one.
+            generator = existing[0]
 
     #=========================================================================================
 

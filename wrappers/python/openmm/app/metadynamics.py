@@ -105,8 +105,8 @@ class Metadynamics(object):
             temperature = temperature*unit.kelvin
         if not unit.is_quantity(height):
             height = height*unit.kilojoules_per_mole
-        if biasFactor < 1.0:
-            raise ValueError('biasFactor must be >= 1')
+        if biasFactor <= 1.0:
+            raise ValueError('biasFactor must be > 1')
         if (saveFrequency is None and biasDir is not None) or (saveFrequency is not None and biasDir is None):
             raise ValueError('Must specify both saveFrequency and biasDir')
         if saveFrequency is not None and (saveFrequency < frequency or saveFrequency%frequency != 0):
@@ -172,7 +172,7 @@ class Metadynamics(object):
             simulation.step(nextSteps)
             if simulation.currentStep % self.frequency == 0:
                 position = self._force.getCollectiveVariableValues(simulation.context)
-                energy = simulation.context.getState(getEnergy=True, groups={forceGroup}).getPotentialEnergy()
+                energy = simulation.context.getState(energy=True, groups={forceGroup}).getPotentialEnergy()
                 height = self.height*np.exp(-energy/(unit.MOLAR_GAS_CONSTANT_R*self._deltaT))
                 self._addGaussian(position, height, simulation.context)
             if self.saveFrequency is not None and simulation.currentStep % self.saveFrequency == 0:
@@ -244,7 +244,7 @@ class Metadynamics(object):
         # Check for any files updated by other processes.
 
         fileLoaded = False
-        pattern = re.compile('bias_(.*)_(.*)\.npy')
+        pattern = re.compile(r'bias_(.*)_(.*)\.npy')
         for filename in os.listdir(self.biasDir):
             match = pattern.match(filename)
             if match is not None:

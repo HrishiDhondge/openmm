@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2019 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -61,18 +61,20 @@ ReferencePlatform::ReferencePlatform() {
     registerKernelFactory(CalcCustomHbondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCentroidBondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCompoundBondForceKernel::Name(), factory);
+    registerKernelFactory(CalcCustomCPPForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCVForceKernel::Name(), factory);
+    registerKernelFactory(CalcATMForceKernel::Name(), factory);
     registerKernelFactory(CalcRMSDForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomManyParticleForceKernel::Name(), factory);
     registerKernelFactory(CalcGayBerneForceKernel::Name(), factory);
     registerKernelFactory(IntegrateVerletStepKernel::Name(), factory);
     registerKernelFactory(IntegrateNoseHooverStepKernel::Name(), factory);
-    registerKernelFactory(IntegrateLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateLangevinMiddleStepKernel::Name(), factory);
     registerKernelFactory(IntegrateBrownianStepKernel::Name(), factory);
     registerKernelFactory(IntegrateVariableLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateVariableVerletStepKernel::Name(), factory);
     registerKernelFactory(IntegrateCustomStepKernel::Name(), factory);
+    registerKernelFactory(IntegrateDPDStepKernel::Name(), factory);
     registerKernelFactory(ApplyAndersenThermostatKernel::Name(), factory);
     registerKernelFactory(ApplyMonteCarloBarostatKernel::Name(), factory);
     registerKernelFactory(RemoveCMMotionKernel::Name(), factory);
@@ -102,6 +104,7 @@ ReferencePlatform::PlatformData::PlatformData(const System& system) : time(0.0),
     periodicBoxSize = new Vec3();
     periodicBoxVectors = new Vec3[3];
     constraints = new ReferenceConstraints(system);
+    virtualSites = new ReferenceVirtualSites(system);
     energyParameterDerivatives = new map<string, double>();
 }
 
@@ -112,5 +115,6 @@ ReferencePlatform::PlatformData::~PlatformData() {
     delete periodicBoxSize;
     delete[] periodicBoxVectors;
     delete constraints;
+    delete virtualSites;
     delete energyParameterDerivatives;
 }

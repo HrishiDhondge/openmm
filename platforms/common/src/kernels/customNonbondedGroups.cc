@@ -18,6 +18,10 @@ DEVICE int reduceMax(int val, LOCAL_ARG int* temp) {
     for (int mask = 16; mask > 0; mask /= 2)
         val = max(val, __shfl_xor_sync(0xffffffff, val, mask));
     return val;
+#elif defined(USE_HIP)
+    for (int mask = 16; mask > 0; mask /= 2)
+        val = max(val, __shfl_xor(val, mask, 32));
+    return val;
 #else
     int indexInWarp = LOCAL_ID%32;
     temp[LOCAL_ID] = val;
@@ -31,41 +35,11 @@ DEVICE int reduceMax(int val, LOCAL_ARG int* temp) {
 #endif
 }
 
-#ifndef SUPPORTS_64_BIT_ATOMICS
-/**
- * This function is used on devices that don't support 64 bit atomics.  Multiple threads within
- * a single tile might have computed forces on the same atom.  This loops over them and makes sure
- * that only one thread updates the force on any given atom.
- */
-void writeForces(GLOBAL real4* forceBuffers, LOCAL AtomData* localData, int atomIndex) {
-    localData[LOCAL_ID].x = atomIndex;
-    SYNC_WARPS;
-    real4 forceSum = make_real4(0);
-    int start = (LOCAL_ID/TILE_SIZE)*TILE_SIZE;
-    int end = start+32;
-    bool isFirst = true;
-    for (int i = start; i < end; i++)
-        if (localData[i].x == atomIndex) {
-            forceSum += (real4) (localData[i].fx, localData[i].fy, localData[i].fz, 0);
-            isFirst &= (i >= LOCAL_ID);
-        }
-    const unsigned int warp = GLOBAL_ID/TILE_SIZE;
-    unsigned int offset = atomIndex + warp*PADDED_NUM_ATOMS;
-    if (isFirst)
-        forceBuffers[offset] += forceSum;
-    SYNC_WARPS;
-}
-#endif
-
 KERNEL void computeInteractionGroups(
-#ifdef SUPPORTS_64_BIT_ATOMICS
         GLOBAL mm_ulong* RESTRICT forceBuffers,
-#else
-        GLOBAL real4* RESTRICT forceBuffers,
-#endif
         GLOBAL mixed* RESTRICT energyBuffer, GLOBAL const real4* RESTRICT posq, GLOBAL const int4* RESTRICT groupData,
         GLOBAL const int* RESTRICT numGroupTiles, int useNeighborList,
-        real4 periodicBoxSize, real4 invPeriodicBoxSize, real4 periodicBoxVecX, real4 periodicBoxVecY, real4 periodicBoxVecZ
+        real4 periodicBoxSize, real4 invPeriodicBoxSize, real4 periodicBoxVecX, real4 periodicBoxVecY, real4 periodicBoxVecZ, int numDerivatives
         PARAMETER_ARGUMENTS) {
     const unsigned int totalWarps = GLOBAL_SIZE/TILE_SIZE;
     const unsigned int warp = GLOBAL_ID/TILE_SIZE; // global warpIndex
@@ -76,8 +50,9 @@ KERNEL void computeInteractionGroups(
     LOCAL AtomData localData[LOCAL_MEMORY_SIZE];
     LOCAL int reductionBuffer[LOCAL_MEMORY_SIZE];
 
-    const unsigned int startTile = (useNeighborList ? warp*numGroupTiles[0]/totalWarps : FIRST_TILE+warp*(LAST_TILE-FIRST_TILE)/totalWarps);
-    const unsigned int endTile = (useNeighborList ? (warp+1)*numGroupTiles[0]/totalWarps : FIRST_TILE+(warp+1)*(LAST_TILE-FIRST_TILE)/totalWarps);
+    mm_ulong wl = warp;
+    const unsigned int startTile = (unsigned int) (useNeighborList ? wl*numGroupTiles[0]/totalWarps : FIRST_TILE+wl*(LAST_TILE-FIRST_TILE)/totalWarps);
+    const unsigned int endTile = (unsigned int) (useNeighborList ? (wl+1)*numGroupTiles[0]/totalWarps : FIRST_TILE+(wl+1)*(LAST_TILE-FIRST_TILE)/totalWarps);
     for (int tile = startTile; tile < endTile; tile++) {
         const int4 atomData = groupData[TILE_SIZE*tile+tgx];
         const int atom1 = atomData.x;
@@ -135,23 +110,15 @@ KERNEL void computeInteractionGroups(
             }
             SYNC_WARPS;
         }
-#ifdef SUPPORTS_64_BIT_ATOMICS
         if (exclusions != 0) {
-            ATOMIC_ADD(&forceBuffers[atom1], (mm_ulong) ((mm_long) (force.x*0x100000000)));
-            ATOMIC_ADD(&forceBuffers[atom1+PADDED_NUM_ATOMS], (mm_ulong) ((mm_long) (force.y*0x100000000)));
-            ATOMIC_ADD(&forceBuffers[atom1+2*PADDED_NUM_ATOMS], (mm_ulong) ((mm_long) (force.z*0x100000000)));
+            ATOMIC_ADD(&forceBuffers[atom1], (mm_ulong) realToFixedPoint(force.x));
+            ATOMIC_ADD(&forceBuffers[atom1+PADDED_NUM_ATOMS], (mm_ulong) realToFixedPoint(force.y));
+            ATOMIC_ADD(&forceBuffers[atom1+2*PADDED_NUM_ATOMS], (mm_ulong) realToFixedPoint(force.z));
         }
-        ATOMIC_ADD(&forceBuffers[atom2], (mm_ulong) ((mm_long) (localData[LOCAL_ID].fx*0x100000000)));
-        ATOMIC_ADD(&forceBuffers[atom2+PADDED_NUM_ATOMS], (mm_ulong) ((mm_long) (localData[LOCAL_ID].fy*0x100000000)));
-        ATOMIC_ADD(&forceBuffers[atom2+2*PADDED_NUM_ATOMS], (mm_ulong) ((mm_long) (localData[LOCAL_ID].fz*0x100000000)));
+        ATOMIC_ADD(&forceBuffers[atom2], (mm_ulong) realToFixedPoint(localData[LOCAL_ID].fx));
+        ATOMIC_ADD(&forceBuffers[atom2+PADDED_NUM_ATOMS], (mm_ulong) realToFixedPoint(localData[LOCAL_ID].fy));
+        ATOMIC_ADD(&forceBuffers[atom2+2*PADDED_NUM_ATOMS], (mm_ulong) realToFixedPoint(localData[LOCAL_ID].fz));
         SYNC_WARPS;
-#else
-        writeForces(forceBuffers, localData, atom2);
-        localData[LOCAL_ID].fx = force.x;
-        localData[LOCAL_ID].fy = force.y;
-        localData[LOCAL_ID].fz = force.z;
-        writeForces(forceBuffers, localData, atom1);
-#endif
     }
     energyBuffer[GLOBAL_ID] += energy;
     SAVE_DERIVATIVES
@@ -189,8 +156,8 @@ KERNEL void buildNeighborList(GLOBAL int* RESTRICT rebuildNeighborList, GLOBAL i
     LOCAL volatile int tileIndex[WARPS_IN_BLOCK];
     LOCAL int reductionBuffer[LOCAL_MEMORY_SIZE];
 
-    const unsigned int startTile = warp*NUM_TILES/totalWarps;
-    const unsigned int endTile = (warp+1)*NUM_TILES/totalWarps;
+    const unsigned int startTile = (unsigned int) (warp*(mm_ulong)NUM_TILES/totalWarps);
+    const unsigned int endTile = (unsigned int) ((warp+1)*(mm_ulong)NUM_TILES/totalWarps);
     for (int tile = startTile; tile < endTile; tile++) {
         const int4 atomData = groupData[TILE_SIZE*tile+tgx];
         const int atom1 = atomData.x;

@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -82,18 +82,20 @@ OpenCLPlatform::OpenCLPlatform() {
     registerKernelFactory(CalcCustomHbondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCentroidBondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCompoundBondForceKernel::Name(), factory);
+    registerKernelFactory(CalcCustomCPPForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCVForceKernel::Name(), factory);
+    registerKernelFactory(CalcATMForceKernel::Name(), factory);
     registerKernelFactory(CalcRMSDForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomManyParticleForceKernel::Name(), factory);
     registerKernelFactory(CalcGayBerneForceKernel::Name(), factory);
     registerKernelFactory(IntegrateVerletStepKernel::Name(), factory);
     registerKernelFactory(IntegrateNoseHooverStepKernel::Name(), factory);
-    registerKernelFactory(IntegrateLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateLangevinMiddleStepKernel::Name(), factory);
     registerKernelFactory(IntegrateBrownianStepKernel::Name(), factory);
     registerKernelFactory(IntegrateVariableVerletStepKernel::Name(), factory);
     registerKernelFactory(IntegrateVariableLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateCustomStepKernel::Name(), factory);
+    registerKernelFactory(IntegrateDPDStepKernel::Name(), factory);
     registerKernelFactory(ApplyAndersenThermostatKernel::Name(), factory);
     registerKernelFactory(ApplyMonteCarloBarostatKernel::Name(), factory);
     registerKernelFactory(RemoveCMMotionKernel::Name(), factory);

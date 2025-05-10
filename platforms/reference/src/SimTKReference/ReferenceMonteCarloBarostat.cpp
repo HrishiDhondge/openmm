@@ -37,7 +37,8 @@ using namespace OpenMM;
 
   --------------------------------------------------------------------------------------- */
 
-ReferenceMonteCarloBarostat::ReferenceMonteCarloBarostat(int numAtoms, const vector<vector<int> >& molecules) : molecules(molecules) {
+ReferenceMonteCarloBarostat::ReferenceMonteCarloBarostat(int numAtoms, const vector<vector<int> >& molecules, const std::vector<double>& masses) :
+            molecules(molecules), masses(masses) {
     savedAtomPositions[0].resize(numAtoms);
     savedAtomPositions[1].resize(numAtoms);
     savedAtomPositions[2].resize(numAtoms);
@@ -54,6 +55,21 @@ ReferenceMonteCarloBarostat::~ReferenceMonteCarloBarostat() {
 
 /**---------------------------------------------------------------------------------------
 
+  Save the positions before applying the barostat.
+
+  @param atomPositions      atom positions
+
+  --------------------------------------------------------------------------------------- */
+
+void ReferenceMonteCarloBarostat::savePositions(vector<Vec3>& atomPositions) {
+    int numAtoms = savedAtomPositions[0].size();
+    for (int i = 0; i < numAtoms; i++)
+        for (int j = 0; j < 3; j++)
+            savedAtomPositions[j][i] = atomPositions[i][j];
+}
+
+/**---------------------------------------------------------------------------------------
+
   Apply the barostat at the start of a time step.
 
   @param atomPositions      atom positions
@@ -65,11 +81,6 @@ ReferenceMonteCarloBarostat::~ReferenceMonteCarloBarostat() {
   --------------------------------------------------------------------------------------- */
 
 void ReferenceMonteCarloBarostat::applyBarostat(vector<Vec3>& atomPositions, const Vec3* boxVectors, double scaleX, double scaleY, double scaleZ) {
-    int numAtoms = savedAtomPositions[0].size();
-    for (int i = 0; i < numAtoms; i++)
-        for (int j = 0; j < 3; j++)
-            savedAtomPositions[j][i] = atomPositions[i][j];
-
     // Loop over molecules.
 
     for (auto& molecule : molecules) {
@@ -98,7 +109,7 @@ void ReferenceMonteCarloBarostat::applyBarostat(vector<Vec3>& atomPositions, con
 
 /**---------------------------------------------------------------------------------------
 
-  Restore atom positions to what they were before applyBarostat() was called.
+  Restore atom positions to what they were before savePositions() was called.
 
   @param atomPositions      atom positions
 
@@ -109,4 +120,31 @@ void ReferenceMonteCarloBarostat::restorePositions(vector<Vec3>& atomPositions) 
     for (int i = 0; i < numAtoms; i++)
         for (int j = 0; j < 3; j++)
             atomPositions[i][j] = savedAtomPositions[j][i];
+}
+
+void ReferenceMonteCarloBarostat::computeMolecularKineticEnergy(const vector<Vec3>& velocities, vector<double>& ke, int components) {
+    ke.resize(components);
+    for (int i = 0; i < components; i++)
+        ke[i] = 0.0;
+    for (auto& molecule : molecules) {
+        Vec3 molVel;
+        double molMass = 0.0;
+        for (int atom : molecule) {
+            molVel += masses[atom]*velocities[atom];
+            molMass += masses[atom];
+        }
+        molVel /= molecule.size();
+        if (components == 1)
+            ke[0] += 0.5*molMass*molVel.dot(molVel);
+        else {
+            ke[0] += 0.5*molMass*molVel[0]*molVel[0];
+            ke[1] += 0.5*molMass*molVel[1]*molVel[1];
+            ke[2] += 0.5*molMass*molVel[2]*molVel[2];
+            if (components == 6) {
+                ke[3] += 0.5*molMass*molVel[1]*molVel[0];
+                ke[4] += 0.5*molMass*molVel[2]*molVel[0];
+                ke[5] += 0.5*molMass*molVel[2]*molVel[1];
+            }
+        }
+    }
 }

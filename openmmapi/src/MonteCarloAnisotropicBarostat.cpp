@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2010-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -43,8 +43,6 @@ MonteCarloAnisotropicBarostat::MonteCarloAnisotropicBarostat(const Vec3& default
 }
 
 void MonteCarloAnisotropicBarostat::setDefaultPressure(const Vec3& pressure) {
-    if (pressure[0] < 0 || pressure[1] < 0 || pressure[2] < 0)
-        throw OpenMMException("All components of pressure must be non-negative");
     defaultPressure = pressure;
 }
 
@@ -62,4 +60,8 @@ void MonteCarloAnisotropicBarostat::setDefaultTemperature(double temp) {
 
 ForceImpl* MonteCarloAnisotropicBarostat::createImpl() const {
     return new MonteCarloAnisotropicBarostatImpl(*this);
+}
+
+Vec3 MonteCarloAnisotropicBarostat::computeCurrentPressure(Context& context) const {
+    return dynamic_cast<MonteCarloAnisotropicBarostatImpl&>(getImplInContext(context)).computeCurrentPressure(getContextImpl(context));
 }

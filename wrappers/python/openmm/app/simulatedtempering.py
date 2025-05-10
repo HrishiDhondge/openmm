@@ -160,6 +160,9 @@ class SimulatedTempering(object):
         
         self.currentTemperature = 0
         self.simulation.integrator.setTemperature(self.temperatures[self.currentTemperature])
+        for param in self.simulation.context.getParameters():
+            if 'MonteCarloTemperature' in param:
+                self.simulation.context.setParameter(param, self.temperatures[self.currentTemperature])
         
         # Add a reporter to the simulation which will handle the updates and reports.
         
@@ -173,7 +176,10 @@ class SimulatedTempering(object):
                 steps2 = st.reportInterval - simulation.currentStep%st.reportInterval
                 steps = min(steps1, steps2)
                 isUpdateAttempt = (steps1 == steps)
-                return (steps, False, isUpdateAttempt, False, isUpdateAttempt)
+                if isUpdateAttempt:
+                    return {'steps': steps, 'periodic':None, 'include':['velocities', 'energy']}
+                else:
+                    return {'steps': steps, 'periodic':None, 'include':[]}
 
             def report(self, simulation, state):
                 st = self.st
@@ -230,6 +236,9 @@ class SimulatedTempering(object):
                     self._hasMadeTransition = True
                     self.currentTemperature = j
                     self.simulation.integrator.setTemperature(self.temperatures[j])
+                    for param in self.simulation.context.getParameters():
+                        if 'MonteCarloTemperature' in param:
+                            self.simulation.context.setParameter(param, self.temperatures[self.currentTemperature])
                 if self._updateWeights:
                     # Update the weight factors.
                     

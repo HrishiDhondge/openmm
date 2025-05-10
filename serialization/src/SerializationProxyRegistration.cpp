@@ -30,6 +30,7 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/AndersenThermostat.h"
+#include "openmm/ATMForce.h"
 #include "openmm/BrownianIntegrator.h"
 #include "openmm/CMAPTorsionForce.h"
 #include "openmm/CMMotionRemover.h"
@@ -46,6 +47,8 @@
 #include "openmm/CustomManyParticleForce.h"
 #include "openmm/CustomNonbondedForce.h"
 #include "openmm/CustomTorsionForce.h"
+#include "openmm/CustomVolumeForce.h"
+#include "openmm/DPDIntegrator.h"
 #include "openmm/GayBerneForce.h"
 #include "openmm/GBSAOBCForce.h"
 #include "openmm/HarmonicAngleForce.h"
@@ -70,6 +73,7 @@
 #include "openmm/serialization/SerializationProxy.h"
 #include "openmm/serialization/BrownianIntegratorProxy.h"
 #include "openmm/serialization/AndersenThermostatProxy.h"
+#include "openmm/serialization/ATMForceProxy.h"
 #include "openmm/serialization/CMAPTorsionForceProxy.h"
 #include "openmm/serialization/CMMotionRemoverProxy.h"
 #include "openmm/serialization/CompoundIntegratorProxy.h"
@@ -85,6 +89,8 @@
 #include "openmm/serialization/CustomManyParticleForceProxy.h"
 #include "openmm/serialization/CustomNonbondedForceProxy.h"
 #include "openmm/serialization/CustomTorsionForceProxy.h"
+#include "openmm/serialization/CustomVolumeForceProxy.h"
+#include "openmm/serialization/DPDIntegratorProxy.h"
 #include "openmm/serialization/GayBerneForceProxy.h"
 #include "openmm/serialization/GBSAOBCForceProxy.h"
 #include "openmm/serialization/HarmonicAngleForceProxy.h"
@@ -123,6 +129,7 @@ using namespace OpenMM;
 
 extern "C" void registerSerializationProxies() {
     SerializationProxy::registerProxy(typeid(AndersenThermostat), new AndersenThermostatProxy());
+    SerializationProxy::registerProxy(typeid(ATMForce), new ATMForceProxy());
     SerializationProxy::registerProxy(typeid(BrownianIntegrator), new BrownianIntegratorProxy());
     SerializationProxy::registerProxy(typeid(CMAPTorsionForce), new CMAPTorsionForceProxy());
     SerializationProxy::registerProxy(typeid(CMMotionRemover), new CMMotionRemoverProxy());
@@ -142,9 +149,11 @@ extern "C" void registerSerializationProxies() {
     SerializationProxy::registerProxy(typeid(CustomManyParticleForce), new CustomManyParticleForceProxy());
     SerializationProxy::registerProxy(typeid(CustomNonbondedForce), new CustomNonbondedForceProxy());
     SerializationProxy::registerProxy(typeid(CustomTorsionForce), new CustomTorsionForceProxy());
+    SerializationProxy::registerProxy(typeid(CustomVolumeForce), new CustomVolumeForceProxy());
     SerializationProxy::registerProxy(typeid(Discrete1DFunction), new Discrete1DFunctionProxy());
     SerializationProxy::registerProxy(typeid(Discrete2DFunction), new Discrete2DFunctionProxy());
     SerializationProxy::registerProxy(typeid(Discrete3DFunction), new Discrete3DFunctionProxy());
+    SerializationProxy::registerProxy(typeid(DPDIntegrator), new DPDIntegratorProxy());
     SerializationProxy::registerProxy(typeid(GayBerneForce), new GayBerneForceProxy());
     SerializationProxy::registerProxy(typeid(GBSAOBCForce), new GBSAOBCForceProxy());
     SerializationProxy::registerProxy(typeid(HarmonicAngleForce), new HarmonicAngleForceProxy());

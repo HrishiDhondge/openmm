@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -75,7 +75,7 @@ struct IntegrationUtilities::ShakeCluster {
     }
 };
 
-struct IntegrationUtilities::ConstraintOrderer : public binary_function<int, int, bool> {
+struct IntegrationUtilities::ConstraintOrderer {
     const vector<int>& atom1;
     const vector<int>& atom2;
     const vector<int>& constraints;
@@ -528,8 +528,39 @@ IntegrationUtilities::IntegrationUtilities(ComputeContext& context, const System
     for (int i = 0; i < numAtoms; i++)
         if (atomCounts[i] > 1)
             hasOverlappingVsites = true;
-    if (hasOverlappingVsites && !context.getSupports64BitGlobalAtomics())
-        throw OpenMMException("This device does not support 64 bit atomics.  Cannot have multiple virtual sites that depend on the same atom.");
+
+    // Divide virtual sites into stages to resolve dependencies between them.
+
+    set<int> sites;
+    vector<int> vsiteStageVec(numAtoms, -1);
+    for (int i = 0; i < numAtoms; i++)
+        if (system.isVirtualSite(i)) {
+            sites.insert(i);
+            vsiteStageVec[i] = numAtoms;
+        }
+    numVsiteStages = 0;
+    int remainingSites = 0;
+    while (sites.size() > 0) {
+        if (sites.size() == remainingSites)
+            throw OpenMMException("Virtual site definitions are circular");
+        remainingSites = sites.size();
+        for (auto index = sites.begin(); index != sites.end();) {
+            const VirtualSite& site = system.getVirtualSite(*index);
+            bool canCompute = true;
+            for (int i = 0; i < site.getNumParticles(); i++)
+                if (vsiteStageVec[site.getParticle(i)] >= numVsiteStages)
+                    canCompute = false;
+            if (canCompute) {
+                vsiteStageVec[*index] = numVsiteStages;
+                index = sites.erase(index);
+            }
+            else
+                ++index;
+        }
+        numVsiteStages++;
+    }
+    vsiteStage.initialize<int>(context, vsiteStageVec.size(), "vsiteStages");
+    vsiteStage.upload(vsiteStageVec);
 
     // Create the kernels used by this class.
 
@@ -544,6 +575,8 @@ IntegrationUtilities::IntegrationUtilities(ComputeContext& context, const System
     defines["PADDED_NUM_ATOMS"] = context.intToString(context.getPaddedNumAtoms());
     if (hasOverlappingVsites)
         defines["HAS_OVERLAPPING_VSITES"] = "1";
+    if (numVsiteStages > 1)
+        defines["MULTIPLE_VSITE_STAGES"] = "1";
     ComputeProgram program = context.compileProgram(CommonKernelSources::integrationUtilities, defines);
     settlePosKernel = program->createKernel("applySettleToPositions");
     settleVelKernel = program->createKernel("applySettleToVelocities");
@@ -579,6 +612,8 @@ IntegrationUtilities::IntegrationUtilities(ComputeContext& context, const System
     vsitePositionKernel->addArg(vsiteLocalCoordsWeights);
     vsitePositionKernel->addArg(vsiteLocalCoordsPos);
     vsitePositionKernel->addArg(vsiteLocalCoordsStartIndex);
+    vsitePositionKernel->addArg(vsiteStage);
+    vsitePositionKernel->addArg();
     vsiteForceKernel->addArg(context.getPosq());
     if (context.getUseMixedPrecision())
         vsiteForceKernel->addArg(context.getPosqCorrection());
@@ -596,6 +631,8 @@ IntegrationUtilities::IntegrationUtilities(ComputeContext& context, const System
     vsiteForceKernel->addArg(vsiteLocalCoordsWeights);
     vsiteForceKernel->addArg(vsiteLocalCoordsPos);
     vsiteForceKernel->addArg(vsiteLocalCoordsStartIndex);
+    vsiteForceKernel->addArg(vsiteStage);
+    vsiteForceKernel->addArg();
     for (int i = 0; i < 3; i++)
         vsiteSaveForcesKernel->addArg();
 
@@ -738,8 +775,10 @@ void IntegrationUtilities::applyVelocityConstraints(double tol) {
 
 void IntegrationUtilities::computeVirtualSites() {
     ContextSelector selector(context);
-    if (numVsites > 0)
+    for (int i = 0; i < numVsiteStages; i++) {
+        vsitePositionKernel->setArg(14, i);
         vsitePositionKernel->execute(numVsites);
+    }
 }
 
 void IntegrationUtilities::initRandomNumberGenerator(unsigned int randomNumberSeed) {
@@ -860,4 +899,50 @@ double IntegrationUtilities::computeKineticEnergy(double timeShift) {
     if (timeShift != 0)
         posDelta.copyTo(context.getVelm());
     return 0.5*energy;
+}
+
+void IntegrationUtilities::computeShiftedVelocities(double timeShift, vector<Vec3>& velocities) {
+    ContextSelector selector(context);
+    int numParticles = context.getNumAtoms();
+    if (timeShift != 0) {
+        // Copy the velocities into the posDelta array while we temporarily modify them.
+
+        context.getVelm().copyTo(posDelta);
+
+        // Apply the time shift.
+
+        timeShiftKernel->setArg(0, context.getVelm());
+        timeShiftKernel->setArg(1, context.getLongForceBuffer());
+        if (context.getUseDoublePrecision())
+            timeShiftKernel->setArg(2, timeShift);
+        else
+            timeShiftKernel->setArg(2, (float) timeShift);
+        timeShiftKernel->execute(numParticles);
+        applyConstraintsImpl(true, 1e-4);
+    }
+    
+    // Retrieve the velocities.
+    
+    velocities.resize(numParticles);
+    if (context.getUseDoublePrecision() || context.getUseMixedPrecision()) {
+        auto velm = (mm_double4*)context.getPinnedBuffer();
+        context.getVelm().download(velm);
+        for (int i = 0; i < numParticles; i++) {
+            mm_double4 v = velm[i];
+            velocities[i] = Vec3(v.x, v.y, v.z);
+        }
+    }
+    else {
+        auto velm = (mm_float4*)context.getPinnedBuffer();
+        context.getVelm().download(velm);
+        for (int i = 0; i < numParticles; i++) {
+            mm_float4 v = velm[i];
+            velocities[i] = Vec3(v.x, v.y, v.z);
+        }
+    }
+    
+    // Restore the velocities.
+    
+    if (timeShift != 0)
+        posDelta.copyTo(context.getVelm());
 }

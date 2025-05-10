@@ -44,6 +44,7 @@ using std::string;
 using std::stringstream;
 
 CustomExternalForceImpl::CustomExternalForceImpl(const CustomExternalForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomExternalForceImpl::~CustomExternalForceImpl() {
@@ -77,7 +78,7 @@ void CustomExternalForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomExternalForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomExternalForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
@@ -95,7 +96,7 @@ map<string, double> CustomExternalForceImpl::getDefaultParameters() {
     return parameters;
 }
 
-void CustomExternalForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcCustomExternalForceKernel>().copyParametersToContext(context, owner);
+void CustomExternalForceImpl::updateParametersInContext(ContextImpl& context, int firstParticle, int lastParticle) {
+    kernel.getAs<CalcCustomExternalForceKernel>().copyParametersToContext(context, owner, firstParticle, lastParticle);
     context.systemChanged();
 }

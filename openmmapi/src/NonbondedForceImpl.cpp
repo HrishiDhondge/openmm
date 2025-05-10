@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,6 +34,7 @@
 #endif
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ContextImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/internal/NonbondedForceImpl.h"
 #include "openmm/kernels.h"
 #include <cmath>
@@ -45,6 +46,11 @@ using namespace OpenMM;
 using namespace std;
 
 NonbondedForceImpl::NonbondedForceImpl(const NonbondedForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
+    recipForceGroup = owner.getReciprocalSpaceForceGroup();
+    if (recipForceGroup < 0)
+        recipForceGroup = owner.getForceGroup();
+    includeDirectSpace = owner.getIncludeDirectSpace();
 }
 
 NonbondedForceImpl::~NonbondedForceImpl() {
@@ -75,6 +81,8 @@ void NonbondedForceImpl::initialize(ContextImpl& context) {
         int particle[2];
         double chargeProd, sigma, epsilon;
         owner.getExceptionParameters(i, particle[0], particle[1], chargeProd, sigma, epsilon);
+        int minp = min(particle[0], particle[1]);
+        int maxp = max(particle[0], particle[1]);
         for (int j = 0; j < 2; j++) {
             if (particle[j] < 0 || particle[j] >= owner.getNumParticles()) {
                 stringstream msg;
@@ -83,7 +91,7 @@ void NonbondedForceImpl::initialize(ContextImpl& context) {
                 throw OpenMMException(msg.str());
             }
         }
-        if (exceptions[particle[0]].count(particle[1]) > 0 || exceptions[particle[1]].count(particle[0]) > 0) {
+        if (exceptions[minp].count(maxp) > 0) {
             stringstream msg;
             msg << "NonbondedForce: Multiple exceptions are specified for particles ";
             msg << particle[0];
@@ -91,8 +99,7 @@ void NonbondedForceImpl::initialize(ContextImpl& context) {
             msg << particle[1];
             throw OpenMMException(msg.str());
         }
-        exceptions[particle[0]].insert(particle[1]);
-        exceptions[particle[1]].insert(particle[0]);
+        exceptions[minp].insert(maxp);
         if (sigma < 0)
             throw OpenMMException("NonbondedForce: sigma for an exception cannot be negative");
         if (epsilon < 0)
@@ -127,7 +134,7 @@ void NonbondedForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("NonbondedForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("NonbondedForce: "+Messages::cutoffTooLarge);
         if (owner.getNonbondedMethod() == NonbondedForce::Ewald && (boxVectors[1][0] != 0.0 || boxVectors[2][0] != 0.0 || boxVectors[2][1] != 0))
             throw OpenMMException("NonbondedForce: Ewald is not supported with non-rectangular boxes.  Use PME instead.");
     }
@@ -135,11 +142,8 @@ void NonbondedForceImpl::initialize(ContextImpl& context) {
 }
 
 double NonbondedForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    bool includeDirect = (owner.getIncludeDirectSpace() && (groups&(1<<owner.getForceGroup())) != 0);
-    int reciprocalGroup = owner.getReciprocalSpaceForceGroup();
-    if (reciprocalGroup < 0)
-        reciprocalGroup = owner.getForceGroup();
-    bool includeReciprocal = ((groups&(1<<reciprocalGroup)) != 0);
+    bool includeDirect = (includeDirectSpace && (groups&(1<<forceGroup)) != 0);
+    bool includeReciprocal = ((groups&(1<<recipForceGroup)) != 0);
     return kernel.getAs<CalcNonbondedForceKernel>().execute(context, includeForces, includeEnergy, includeDirect, includeReciprocal);
 }
 
@@ -341,8 +345,8 @@ double NonbondedForceImpl::calcDispersionCorrection(const System& system, const 
     return 8*numParticles*numParticles*M_PI*(sum1/(9*pow(cutoff, 9))-sum2/(3*pow(cutoff, 3))+sum3);
 }
 
-void NonbondedForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcNonbondedForceKernel>().copyParametersToContext(context, owner);
+void NonbondedForceImpl::updateParametersInContext(ContextImpl& context, int firstParticle, int lastParticle, int firstException, int lastException) {
+    kernel.getAs<CalcNonbondedForceKernel>().copyParametersToContext(context, owner, firstParticle, lastParticle, firstException, lastException);
     context.systemChanged();
 }
 

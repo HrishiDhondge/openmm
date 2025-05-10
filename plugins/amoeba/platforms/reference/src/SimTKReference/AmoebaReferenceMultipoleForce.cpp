@@ -1,5 +1,5 @@
 
-/* Portions copyright (c) 2006-2015 Stanford University and Simbios.
+/* Portions copyright (c) 2006-2025 Stanford University and Simbios.
  * Contributors: Pande Group
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -23,13 +23,19 @@
  */
 
 #include "AmoebaReferenceMultipoleForce.h"
+#include "openmm/internal/AmoebaGeneralizedKirkwoodForceImpl.h"
 #include "SimTKOpenMMRealType.h"
 #include "jama_svd.h"
 #include <algorithm>
+#ifdef _MSC_VER
+  #define POCKETFFT_NO_VECTORS
+#endif
+#include "pocketfft_hdronly.h"
 
 // In case we're using some primitive version of Visual Studio this will
 // make sure that erf() and erfc() are defined.
 #include "openmm/internal/MSVC_erfc.h"
+
 
 using std::vector;
 using namespace OpenMM;
@@ -43,7 +49,7 @@ AmoebaReferenceMultipoleForce::AmoebaReferenceMultipoleForce() :
                                                    _mutualInducedDipoleIterations(0),
                                                    _maximumMutualInducedDipoleIterations(100),
                                                    _mutualInducedDipoleEpsilon(1.0e+50),
-                                                   _mutualInducedDipoleTargetEpsilon(1.0e-04),
+                                                   _mutualInducedDipoleTargetEpsilon(1.0e-4),
                                                    _debye(48.033324)
 {
     initialize();
@@ -58,7 +64,7 @@ AmoebaReferenceMultipoleForce::AmoebaReferenceMultipoleForce(NonbondedMethod non
                                                    _mutualInducedDipoleIterations(0),
                                                    _maximumMutualInducedDipoleIterations(100),
                                                    _mutualInducedDipoleEpsilon(1.0e+50),
-                                                   _mutualInducedDipoleTargetEpsilon(1.0e-04),
+                                                   _mutualInducedDipoleTargetEpsilon(1.0e-4),
                                                    _debye(48.033324)
 {
     initialize();
@@ -245,11 +251,10 @@ double AmoebaReferenceMultipoleForce::getMultipoleScaleFactor(unsigned int parti
 
     MapIntRealOpenMM  scaleMap   = _scaleMaps[particleI][scaleType];
     MapIntRealOpenMMCI isPresent = scaleMap.find(particleJ);
-    if (isPresent != scaleMap.end()) {
+    if (isPresent != scaleMap.end())
         return isPresent->second;
-    } else {
+    else
         return 1.0;
-    }
 }
 
 void AmoebaReferenceMultipoleForce::getDScaleAndPScale(unsigned int particleI, unsigned int particleJ, double& dScale, double& pScale) const
@@ -764,11 +769,10 @@ void AmoebaReferenceMultipoleForce::calculateFixedMultipoleField(const vector<Mu
             // otherwise add unmodified field and fieldPolar to particle fields
 
             double dScale, pScale;
-            if (jj <= _maxScaleIndex[ii]) {
+            if (jj <= _maxScaleIndex[ii])
                 getDScaleAndPScale(ii, jj, dScale, pScale);
-            } else {
+            else
                 dScale = pScale = 1.0;
-            }
             calculateFixedMultipoleFieldPairIxn(particleData[ii], particleData[jj], dScale, pScale);
         }
     }
@@ -1520,11 +1524,10 @@ void AmoebaReferenceMultipoleForce::mapTorqueToForceForParticle(const MultipoleP
     norms[V] = normalizeVec3(vectorV);
 
     Vec3 vectorW;
-    if (particleW && (axisType == AmoebaMultipoleForce::ZBisect || axisType == AmoebaMultipoleForce::ThreeFold)) {
+    if (particleW && (axisType == AmoebaMultipoleForce::ZBisect || axisType == AmoebaMultipoleForce::ThreeFold))
          vectorW = particleW->position - particleI.position;
-    } else {
+    else
          vectorW = vectorU.cross(vectorV);
-    }
     norms[W]  = normalizeVec3(vectorW);
 
     Vec3 vectorUV, vectorUW, vectorVW;
@@ -1571,7 +1574,8 @@ void AmoebaReferenceMultipoleForce::mapTorqueToForceForParticle(const MultipoleP
         if (axisType == AmoebaMultipoleForce::Bisector) {
             factor2    *= half;
             factor4     = half*dphi[W]/(norms[V]);
-        } else {
+        }
+        else {
             factor4     = 0.0;
         }
 
@@ -1585,7 +1589,8 @@ void AmoebaReferenceMultipoleForce::mapTorqueToForceForParticle(const MultipoleP
             forces[particleI.particleIndex][ii]                 +=  (forceU + forceV);
         }
 
-    } else if (axisType == AmoebaMultipoleForce::ZBisect) {
+    }
+    else if (axisType == AmoebaMultipoleForce::ZBisect) {
 
         Vec3 vectorR          = vectorV + vectorW;
         Vec3 vectorS          = vectorU.cross(vectorR);
@@ -1646,7 +1651,8 @@ void AmoebaReferenceMultipoleForce::mapTorqueToForceForParticle(const MultipoleP
 
         forces[particleI.particleIndex]        += (forceU + forceV + forceW);
 
-    } else if (axisType == AmoebaMultipoleForce::ThreeFold) {
+    }
+    else if (axisType == AmoebaMultipoleForce::ThreeFold) {
 
         // 3-fold
 
@@ -1678,7 +1684,8 @@ void AmoebaReferenceMultipoleForce::mapTorqueToForceForParticle(const MultipoleP
             forces[particleI.particleIndex][ii] += (du + dv + dw);
         }
 
-    } else if (axisType == AmoebaMultipoleForce::ZOnly) {
+    }
+    else if (axisType == AmoebaMultipoleForce::ZOnly) {
 
         // z-only
 
@@ -2113,8 +2120,7 @@ AmoebaReferenceMultipoleForce::UpdateInducedDipoleFieldStruct::UpdateInducedDipo
 AmoebaReferenceGeneralizedKirkwoodMultipoleForce::AmoebaReferenceGeneralizedKirkwoodMultipoleForce(AmoebaReferenceGeneralizedKirkwoodForce* amoebaReferenceGeneralizedKirkwoodForce) :
                AmoebaReferenceMultipoleForce(NoCutoff),
                _amoebaReferenceGeneralizedKirkwoodForce(amoebaReferenceGeneralizedKirkwoodForce),
-               _gkc(2.455)
-{
+               _gkc(2.455), _beta0(0.9563), _beta1(0.2578), _beta2(0.0810) {
 
     double solventDielectric  = _amoebaReferenceGeneralizedKirkwoodForce->getSolventDielectric();
 
@@ -2123,17 +2129,19 @@ AmoebaReferenceGeneralizedKirkwoodMultipoleForce::AmoebaReferenceGeneralizedKirk
     _fq                           =  3.0*(1.0 - solventDielectric)/(2.0 + 3.0*solventDielectric);
 
     _amoebaReferenceGeneralizedKirkwoodForce->getGrycukBornRadii(_bornRadii);
+    _amoebaReferenceGeneralizedKirkwoodForce->getSoluteIntegral(_soluteIntegral);
     _amoebaReferenceGeneralizedKirkwoodForce->getAtomicRadii(_atomicRadii);
-    _amoebaReferenceGeneralizedKirkwoodForce->getScaleFactors(_scaledRadii);
+    _amoebaReferenceGeneralizedKirkwoodForce->getScaleFactors(_scaleFactors);
+    _amoebaReferenceGeneralizedKirkwoodForce->getDescreenRadii(_descreenRadii);
+    _amoebaReferenceGeneralizedKirkwoodForce->getNeckFactors(_neckFactors);
 
-    _includeCavityTerm            = _amoebaReferenceGeneralizedKirkwoodForce->getIncludeCavityTerm();
-    _probeRadius                  = _amoebaReferenceGeneralizedKirkwoodForce->getProbeRadius();
-    _surfaceAreaFactor            = _amoebaReferenceGeneralizedKirkwoodForce->getSurfaceAreaFactor();
-    _dielectricOffset             = _amoebaReferenceGeneralizedKirkwoodForce->getDielectricOffset();
-
-    for (unsigned int ii = 0; ii < _scaledRadii.size(); ii++) {
-        _scaledRadii[ii] *= _atomicRadii[ii];
-    }
+    _includeCavityTerm = _amoebaReferenceGeneralizedKirkwoodForce->getIncludeCavityTerm();
+    _probeRadius = _amoebaReferenceGeneralizedKirkwoodForce->getProbeRadius();
+    _surfaceAreaFactor = _amoebaReferenceGeneralizedKirkwoodForce->getSurfaceAreaFactor();
+    _dielectricOffset = _amoebaReferenceGeneralizedKirkwoodForce->getDielectricOffset();
+    _tanhRescaling = _amoebaReferenceGeneralizedKirkwoodForce->getTanhRescaling();
+    _amoebaReferenceGeneralizedKirkwoodForce->getTanhParameters(_beta0, _beta1, _beta2);
+    _descreenOffset = _amoebaReferenceGeneralizedKirkwoodForce->getDescreenOffset();
 }
 
 AmoebaReferenceGeneralizedKirkwoodMultipoleForce::~AmoebaReferenceGeneralizedKirkwoodMultipoleForce()
@@ -2160,6 +2168,12 @@ double AmoebaReferenceGeneralizedKirkwoodMultipoleForce::getDielectricOffset() c
 {
      return _dielectricOffset;
 };
+
+double AmoebaReferenceGeneralizedKirkwoodMultipoleForce::getDescreenOffset() const
+{
+    return _descreenOffset;
+};
+
 
 void AmoebaReferenceGeneralizedKirkwoodMultipoleForce::zeroFixedMultipoleFields()
 {
@@ -4056,66 +4070,126 @@ double AmoebaReferenceGeneralizedKirkwoodMultipoleForce::calculateElectrostatic(
     return energy;
 }
 
-void AmoebaReferenceGeneralizedKirkwoodMultipoleForce::calculateGrycukChainRulePairIxn(const MultipoleParticleData& particleI, const MultipoleParticleData& particleJ,
-                                                                                       const vector<double>& dBorn, vector<Vec3>& forces) const
-{
-    unsigned int iIndex             = particleI.particleIndex;
-    unsigned int jIndex             = particleJ.particleIndex;
+static double neckDescreenDerivative(double r, double radius, double radiusK, double sneck) {
+    // Radius of water in nm.
+    double radiusWater = 0.14;
 
-    double pi43                     = (4.0/3.0)*M_PI;
+    if (r > radius + radiusK + 2 * radiusWater) {
+        return 0.0;
+    }
+
+    // Get Aij and Bij
+    double Aij, Bij;
+    AmoebaGeneralizedKirkwoodForceImpl::getNeckConstants(radius, radiusK, Aij, Bij);
+    // Use Aij and Bij to get neck value using derivative of Equation 13 from Aguilar/Onufriev 2010 paper
+    double rMinusBij = r - Bij;
+    double rMinusBij3 = rMinusBij * rMinusBij * rMinusBij;
+    double rMinusBij4 = rMinusBij3 * rMinusBij;
+    double radiiMinusr = radius + radiusK + 2.0 * radiusWater - r;
+    double radiiMinusr3 = radiiMinusr * radiiMinusr * radiiMinusr;
+    double radiiMinusr4 = radiiMinusr3 * radiiMinusr;
+
+    double PI4_3 = 4.0 * M_PI / 3.0;
+    return 4.0 * PI4_3 * (sneck * Aij * rMinusBij3 * radiiMinusr4 - sneck * Aij * rMinusBij4 * radiiMinusr3);
+}
+
+void AmoebaReferenceGeneralizedKirkwoodMultipoleForce::calculateGrycukChainRulePairIxn(
+        const MultipoleParticleData &particleI, const MultipoleParticleData &particleJ,
+        const vector<double> &dBorn, vector<Vec3> &forces) const {
+    unsigned int iIndex = particleI.particleIndex;
+    unsigned int jIndex = particleJ.particleIndex;
+
+    if (iIndex == jIndex) return;
+
+    double bornRadiusI = _bornRadii[iIndex];
+
+    const double bigRadius = 3.0;
+    if (bornRadiusI >= bigRadius) return;
+
+    double third = 1.0 / 3.0;
+    double pi43 = 4.0 * third * M_PI;
 
     double lik, uik;
     double lik4, uik4;
-    double factor                   = -pow(M_PI, (1.0/3.0))*pow(6.0,(2.0/3.0))/9.0;
-    double term                     = pi43/(_bornRadii[iIndex]*_bornRadii[iIndex]*_bornRadii[iIndex]);
-          term                      = factor/pow(term, (4.0/3.0));
+    double factor = -pow(M_PI, third) * pow(6.0, 2.0 * third) / 9.0;
+    double term = pi43 / (_bornRadii[iIndex] * _bornRadii[iIndex] * _bornRadii[iIndex]);
+    term = factor / pow(term, 4.0 * third);
+    if (_tanhRescaling) {
+        double rhoi = _atomicRadii[iIndex];
+        double rhoi3 = rhoi * rhoi * rhoi;
+        double rhoi3Psi = rhoi3 * _soluteIntegral[iIndex];
+        double rhoi6Psi2 = rhoi3Psi * rhoi3Psi;
+        double rhoi9Psi3 = rhoi6Psi2 * rhoi3Psi;
+        double rhoi6Psi = rhoi3 * rhoi3 * _soluteIntegral[iIndex];
+        double rhoi9Psi2 = rhoi6Psi2 * rhoi3;
+        double tanhTerm = tanh(_beta0 * rhoi3Psi - _beta1 * rhoi6Psi2 + _beta2 * rhoi9Psi3);
+        double tanh2 = tanhTerm * tanhTerm;
+        double chainRuleTerm = _beta0 * rhoi3 - 2.0 * _beta1 * rhoi6Psi + 3.0 * _beta2 * rhoi9Psi2;
+        double recipBigRad = 1.0 / bigRadius;
+        double recipBigRad3 = recipBigRad * recipBigRad * recipBigRad;
+        double tanh_constant = pi43 * ((1.0 / rhoi3) - recipBigRad3);
+        term = term * tanh_constant * chainRuleTerm * (1.0 - tanh2);
+    }
 
-    Vec3 deltaR                     = particleJ.position - particleI.position;
+    Vec3 deltaR = particleJ.position - particleI.position;
+    double sk = _scaleFactors[jIndex] * _descreenRadii[jIndex];
+    if (sk <= 0.0) return;
+    double sk2 = sk * sk;
+    double r2 = deltaR.dot(deltaR);
+    double r = sqrt(r2);
+    double de = 0.0;
 
-    double sk                       = _scaledRadii[jIndex];
-    double sk2                      = sk*sk;
-    double r2                       = deltaR.dot(deltaR);
-    double r                        = sqrt(r2);
-    double de                       = 0.0;
+    double baseRadiusI = max(_atomicRadii[iIndex], _descreenRadii[iIndex]) + _descreenOffset;
+    // If atom index engulfs the descreening atom, then there is no descreening.
+    if (baseRadiusI > r + sk) return;
 
-    // If atom index engulfs the descreening atom, then there is no descreening. 
-    if (_atomicRadii[iIndex] > r + sk) return;
-
-    if ((_atomicRadii[iIndex] + r) < sk) {
+    if ((baseRadiusI + r) < sk) {
         double uik4;
-        uik                = sk - r;
-        uik4               = uik*uik;
-        uik4               = uik4*uik4;
-        de                 = -4.0*M_PI/uik4;
+        uik = sk - r;
+        uik4 = uik * uik;
+        uik4 = uik4 * uik4;
+        de = -4.0 * M_PI / uik4;
     }
 
-    if ((_atomicRadii[iIndex] + r) < sk) {
-        lik          = sk - r;
-        lik4         = lik*lik;
-        lik4         = lik4*lik4;
-        de          += 0.25*M_PI*(sk2-4.0*sk*r+17.0*r2)/ (r2*lik4);
-    } else if (r < (_atomicRadii[iIndex] +sk)) {
-        lik          = _atomicRadii[iIndex];
-        lik4         = lik*lik;
-        lik4         = lik4*lik4;
-        de          += 0.25*M_PI*(2.0*_atomicRadii[iIndex]*_atomicRadii[iIndex]-sk2-r2)/ (r2*lik4);
-    } else {
-        lik          = r - sk;
-        lik4         = lik*lik;
-        lik4         = lik4*lik4;
-        de          += 0.25*M_PI*(sk2-4.0*sk*r+r2)/ (r2*lik4);
+    if ((baseRadiusI + r) < sk) {
+        lik = sk - r;
+        lik4 = lik * lik;
+        lik4 = lik4 * lik4;
+        de += 0.25 * M_PI * (sk2 - 4.0 * sk * r + 17.0 * r2) / (r2 * lik4);
     }
-    uik                = r + sk;
-    uik4               = uik*uik;
-    uik4               = uik4*uik4;
+    else if (r < (baseRadiusI + sk)) {
+        lik = baseRadiusI;
+        lik4 = lik * lik;
+        lik4 = lik4 * lik4;
+        de += 0.25 * M_PI * (2.0 * baseRadiusI * baseRadiusI - sk2 - r2) / (r2 * lik4);
+    }
+    else {
+        lik = r - sk;
+        lik4 = lik * lik;
+        lik4 = lik4 * lik4;
+        de += 0.25 * M_PI * (sk2 - 4.0 * sk * r + r2) / (r2 * lik4);
+    }
+    uik = r + sk;
+    uik4 = uik * uik;
+    uik4 = uik4 * uik4;
 
-    de                -= 0.25*M_PI*(sk2+4.0*sk*r+r2)/ (r2*uik4);
-    double dbr         = term*de/r;
-          de           = dbr*dBorn[iIndex];
+    de -= 0.25 * M_PI * (sk2 + 4.0 * sk * r + r2) / (r2 * uik4);
 
-    forces[iIndex]    -= deltaR*de;
-    forces[jIndex]    += deltaR*de;
+    double mixedNeckScale =  0.5 * (_neckFactors[iIndex] + _neckFactors[jIndex]);
+    if (mixedNeckScale > 0.0) {
+        de += neckDescreenDerivative(r, baseRadiusI, _descreenRadii[jIndex], mixedNeckScale);
+    }
+
+    double dbr = term * de / r;
+    de = dbr * dBorn[iIndex];
+
+    forces[iIndex] -= deltaR * de;
+    forces[jIndex] += deltaR * de;
+
 }
+
+
+
 
 double AmoebaReferenceGeneralizedKirkwoodMultipoleForce::calculateCavityTermEnergyAndForces(vector<double>& dBorn) const
 {
@@ -4809,16 +4883,12 @@ AmoebaReferencePmeMultipoleForce::AmoebaReferencePmeMultipoleForce() :
                _pmeGridSize(0), _totalGridSize(0), _alphaEwald(0.0)
 {
 
-    _fftplan = NULL;
     _pmeGrid = NULL;
     _pmeGridDimensions = IntVec(-1, -1, -1);
 }
 
 AmoebaReferencePmeMultipoleForce::~AmoebaReferencePmeMultipoleForce()
 {
-    if (_fftplan) {
-        fftpack_destroy(_fftplan);
-    }
     if (_pmeGrid) {
         delete[] _pmeGrid;
     }
@@ -4863,11 +4933,6 @@ void AmoebaReferencePmeMultipoleForce::setPmeGridDimensions(vector<int>& pmeGrid
         (pmeGridDimensions[2] == _pmeGridDimensions[2]))
         return;
 
-    if (_fftplan) {
-        fftpack_destroy(_fftplan);
-    }
-    fftpack_init_3d(&_fftplan,pmeGridDimensions[0], pmeGridDimensions[1], pmeGridDimensions[2]);
-
     _pmeGridDimensions[0] = pmeGridDimensions[0];
     _pmeGridDimensions[1] = pmeGridDimensions[1];
     _pmeGridDimensions[2] = pmeGridDimensions[2];
@@ -4908,7 +4973,7 @@ void AmoebaReferencePmeMultipoleForce::resizePmeArrays()
         if (_pmeGrid) {
             delete[] _pmeGrid;
         }
-        _pmeGrid      = new t_complex[_totalGridSize];
+        _pmeGrid      = new complex<double>[_totalGridSize];
         _pmeGridSize  = _totalGridSize;
     }
 
@@ -4930,7 +4995,7 @@ void AmoebaReferencePmeMultipoleForce::initializePmeGrid()
         return;
 
     for (int jj = 0; jj < _totalGridSize; jj++)
-        _pmeGrid[jj].re = _pmeGrid[jj].im = 0.0;
+        _pmeGrid[jj] = complex<double>(0, 0);
 }
 
 void AmoebaReferencePmeMultipoleForce::getPeriodicDelta(Vec3& deltaR) const
@@ -4976,7 +5041,8 @@ void AmoebaReferencePmeMultipoleForce::getDampedInverseDistances(const Multipole
     dampedDInverseDistances[2] = 15.0*(1.0-dampedDScale[2])/r7;
     if (pscale == dscale) {
         dampedPInverseDistances = dampedDInverseDistances;
-    } else {
+    }
+    else {
         Vec3 dampedPScale = scaleFactor*pscale;
         dampedPInverseDistances[0] =      (1.0-dampedPScale[0])/r3;
         dampedPInverseDistances[1] =  3.0*(1.0-dampedPScale[1])/r5;
@@ -5175,9 +5241,14 @@ void AmoebaReferencePmeMultipoleForce::calculateFixedMultipoleField(const vector
     computeAmoebaBsplines(particleData);
     initializePmeGrid();
     spreadFixedMultipolesOntoGrid(particleData);
-    fftpack_exec_3d(_fftplan, FFTPACK_FORWARD, _pmeGrid, _pmeGrid);
+    vector<size_t> shape = {(size_t) _pmeGridDimensions[0], (size_t) _pmeGridDimensions[1], (size_t) _pmeGridDimensions[2]};
+    vector<size_t> axes = {0, 1, 2};
+    vector<ptrdiff_t> stride = {(ptrdiff_t) (_pmeGridDimensions[1]*_pmeGridDimensions[2]*sizeof(complex<double>)),
+                                (ptrdiff_t) (_pmeGridDimensions[2]*sizeof(complex<double>)),
+                                (ptrdiff_t) sizeof(complex<double>)};
+    pocketfft::c2c(shape, stride, stride, axes, true, _pmeGrid, _pmeGrid, 1.0, 0);
     performAmoebaReciprocalConvolution();
-    fftpack_exec_3d(_fftplan, FFTPACK_BACKWARD, _pmeGrid, _pmeGrid);
+    pocketfft::c2c(shape, stride, stride, axes, false, _pmeGrid, _pmeGrid, 1.0, 0);
     computeFixedPotentialFromGrid();
     recordFixedMultipoleField();
 
@@ -5385,7 +5456,7 @@ void AmoebaReferencePmeMultipoleForce::spreadFixedMultipolesOntoGrid(const vecto
     // Clear the grid.
 
     for (int gridIndex = 0; gridIndex < _totalGridSize; gridIndex++)
-        _pmeGrid[gridIndex] = t_complex(0, 0);
+        _pmeGrid[gridIndex] = complex<double>(0, 0);
 
     // Loop over atoms and spread them on the grid.
 
@@ -5414,8 +5485,8 @@ void AmoebaReferencePmeMultipoleForce::spreadFixedMultipolesOntoGrid(const vecto
                 for (int iz = 0; iz < AMOEBA_PME_ORDER; iz++) {
                     int z = (gridPoint[2]+iz) % _pmeGridDimensions[2];
                     double4 v = _thetai[2][atomIndex*AMOEBA_PME_ORDER+iz];
-                    t_complex& gridValue = _pmeGrid[x*_pmeGridDimensions[1]*_pmeGridDimensions[2]+y*_pmeGridDimensions[2]+z];
-                    gridValue.re += term0*v[0] + term1*v[1] + term2*v[2];
+                    complex<double>& gridValue = _pmeGrid[x*_pmeGridDimensions[1]*_pmeGridDimensions[2]+y*_pmeGridDimensions[2]+z];
+                    gridValue += term0*v[0] + term1*v[1] + term2*v[2];
                 }
             }
         }
@@ -5436,7 +5507,7 @@ void AmoebaReferencePmeMultipoleForce::performAmoebaReciprocalConvolution()
         int kz = remainder-ky*_pmeGridDimensions[2];
 
         if (kx == 0 && ky == 0 && kz == 0) {
-            _pmeGrid[index].re = _pmeGrid[index].im = 0.0;
+            _pmeGrid[index] = complex<double>(0, 0);
             continue;
         }
 
@@ -5456,8 +5527,7 @@ void AmoebaReferencePmeMultipoleForce::performAmoebaReciprocalConvolution()
         double denom = m2*bx*by*bz;
         double eterm = scaleFactor*exp(-expFactor*m2)/denom;
 
-        _pmeGrid[index].re *= eterm;
-        _pmeGrid[index].im *= eterm;
+        _pmeGrid[index] *= eterm;
     }
 }
 
@@ -5507,7 +5577,7 @@ void AmoebaReferencePmeMultipoleForce::computeFixedPotentialFromGrid()
                 for (int ix = 0; ix < AMOEBA_PME_ORDER; ix++) {
                     int i = gridPoint[0]+ix-(gridPoint[0]+ix >= _pmeGridDimensions[0] ? _pmeGridDimensions[0] : 0);
                     int gridIndex = i*_pmeGridDimensions[1]*_pmeGridDimensions[2] + j*_pmeGridDimensions[2] + k;
-                    double tq = _pmeGrid[gridIndex].re;
+                    double tq = _pmeGrid[gridIndex].real();
                     double4 tadd = _thetai[0][m*AMOEBA_PME_ORDER+ix];
                     t[0] += tq*tadd[0];
                     t[1] += tq*tadd[1];
@@ -5581,7 +5651,7 @@ void AmoebaReferencePmeMultipoleForce::spreadInducedDipolesOnGrid(const vector<V
     // Clear the grid.
 
     for (int gridIndex = 0; gridIndex < _totalGridSize; gridIndex++)
-        _pmeGrid[gridIndex] = t_complex(0, 0);
+        _pmeGrid[gridIndex] = complex<double>(0, 0);
 
     // Loop over atoms and spread them on the grid.
 
@@ -5606,9 +5676,8 @@ void AmoebaReferencePmeMultipoleForce::spreadInducedDipolesOnGrid(const vector<V
                 for (int iz = 0; iz < AMOEBA_PME_ORDER; iz++) {
                     int z = (gridPoint[2]+iz) % _pmeGridDimensions[2];
                     double4 v = _thetai[2][atomIndex*AMOEBA_PME_ORDER+iz];
-                    t_complex& gridValue = _pmeGrid[x*_pmeGridDimensions[1]*_pmeGridDimensions[2]+y*_pmeGridDimensions[2]+z];
-                    gridValue.re += term01*v[0] + term11*v[1];
-                    gridValue.im += term02*v[0] + term12*v[1];
+                    complex<double>& gridValue = _pmeGrid[x*_pmeGridDimensions[1]*_pmeGridDimensions[2]+y*_pmeGridDimensions[2]+z];
+                    gridValue += complex<double>(term01*v[0] + term11*v[1], term02*v[0] + term12*v[1]);
                 }
             }
         }
@@ -5697,15 +5766,15 @@ void AmoebaReferencePmeMultipoleForce::computeInducedPotentialFromGrid()
                 for (int ix = 0; ix < AMOEBA_PME_ORDER; ix++) {
                     int i = gridPoint[0]+ix-(gridPoint[0]+ix >= _pmeGridDimensions[0] ? _pmeGridDimensions[0] : 0);
                     int gridIndex = i*_pmeGridDimensions[1]*_pmeGridDimensions[2] + j*_pmeGridDimensions[2] + k;
-                    t_complex tq = _pmeGrid[gridIndex];
+                    complex<double> tq = _pmeGrid[gridIndex];
                     double4 tadd = _thetai[0][m*AMOEBA_PME_ORDER+ix];
-                    t0_1 += tq.re*tadd[0];
-                    t1_1 += tq.re*tadd[1];
-                    t2_1 += tq.re*tadd[2];
-                    t0_2 += tq.im*tadd[0];
-                    t1_2 += tq.im*tadd[1];
-                    t2_2 += tq.im*tadd[2];
-                    t3 += (tq.re+tq.im)*tadd[3];
+                    t0_1 += tq.real()*tadd[0];
+                    t1_1 += tq.real()*tadd[1];
+                    t2_1 += tq.real()*tadd[2];
+                    t0_2 += tq.imag()*tadd[0];
+                    t1_2 += tq.imag()*tadd[1];
+                    t2_2 += tq.imag()*tadd[2];
+                    t3 += (tq.real()+tq.imag())*tadd[3];
                 }
                 tu00_1 += t0_1*u[0];
                 tu10_1 += t1_1*u[0];
@@ -6049,9 +6118,14 @@ void AmoebaReferencePmeMultipoleForce::calculateReciprocalSpaceInducedDipoleFiel
 
     initializePmeGrid();
     spreadInducedDipolesOnGrid(*updateInducedDipoleFields[0].inducedDipoles, *updateInducedDipoleFields[1].inducedDipoles);
-    fftpack_exec_3d(_fftplan, FFTPACK_FORWARD, _pmeGrid, _pmeGrid);
+    vector<size_t> shape = {(size_t) _pmeGridDimensions[0], (size_t) _pmeGridDimensions[1], (size_t) _pmeGridDimensions[2]};
+    vector<size_t> axes = {0, 1, 2};
+    vector<ptrdiff_t> stride = {(ptrdiff_t) (_pmeGridDimensions[1]*_pmeGridDimensions[2]*sizeof(complex<double>)),
+                                (ptrdiff_t) (_pmeGridDimensions[2]*sizeof(complex<double>)),
+                                (ptrdiff_t) sizeof(complex<double>)};
+    pocketfft::c2c(shape, stride, stride, axes, true, _pmeGrid, _pmeGrid, 1.0, 0);
     performAmoebaReciprocalConvolution();
-    fftpack_exec_3d(_fftplan, FFTPACK_BACKWARD, _pmeGrid, _pmeGrid);
+    pocketfft::c2c(shape, stride, stride, axes, false, _pmeGrid, _pmeGrid, 1.0, 0);
     computeInducedPotentialFromGrid();
     recordInducedDipoleField(updateInducedDipoleFields[0].inducedDipoleField, updateInducedDipoleFields[1].inducedDipoleField);
 }
@@ -6296,10 +6370,12 @@ double AmoebaReferencePmeMultipoleForce::calculatePmeSelfEnergy(const vector<Mul
     double cii = 0.0;
     double dii = 0.0;
     double qii = 0.0;
+    double totalCharge = 0.0;
     for (unsigned int ii = 0; ii < _numParticles; ii++) {
 
         const MultipoleParticleData& particleI = particleData[ii];
 
+        totalCharge += particleI.charge;
         cii += particleI.charge*particleI.charge;
 
         Vec3 dipole(particleI.sphericalDipole[1], particleI.sphericalDipole[2], particleI.sphericalDipole[0]);
@@ -6315,6 +6391,9 @@ double AmoebaReferencePmeMultipoleForce::calculatePmeSelfEnergy(const vector<Mul
     double a2 = _alphaEwald * _alphaEwald;
     double a4 = a2*a2;
     double energy = prefac*(cii + twoThirds*a2*dii + fourOverFifteen*a4*qii);
+    // Correction for the neutralizing plasma.
+    double volume = _periodicBoxVectors[0][0] * _periodicBoxVectors[1][1] * _periodicBoxVectors[2][2];
+    energy -= totalCharge*totalCharge/(8*EPSILON0*volume*_alphaEwald*_alphaEwald);
     return energy;
 }
 

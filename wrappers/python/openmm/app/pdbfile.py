@@ -6,7 +6,7 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2021 Stanford University and the Authors.
+Portions copyright (c) 2012-2023 Stanford University and the Authors.
 Authors: Peter Eastman
 Contributors:
 
@@ -152,7 +152,7 @@ class PDBFile(object):
                                 element = elem.get_by_symbol(upper[0])
                             except KeyError:
                                 pass
-                    newAtom = top.addAtom(atomName, element, r, str(atom.serial_number))
+                    newAtom = top.addAtom(atomName, element, r, str(atom.serial_number), formalCharge=atom.formal_charge)
                     atomByNumber[atom.serial_number] = newAtom
         self._positions = []
         for model in pdb.iter_models(True):
@@ -277,8 +277,8 @@ class PDBFile(object):
             The Topology defining the model to write
         positions : list
             The list of atomic positions to write
-        file : file=stdout
-            A file to write to
+        file : string or file
+            the name of the file to write.  Alternatively you can pass an open file object.
         keepIds : bool=False
             If True, keep the residue and chain IDs specified in the Topology
             rather than generating new ones.  Warning: It is up to the caller to
@@ -287,9 +287,13 @@ class PDBFile(object):
         extraParticleIdentifier : string='EP'
             String to write in the element column of the ATOM records for atoms whose element is None (extra particles)
         """
-        PDBFile.writeHeader(topology, file)
-        PDBFile.writeModel(topology, positions, file, keepIds=keepIds, extraParticleIdentifier=extraParticleIdentifier)
-        PDBFile.writeFooter(topology, file)
+        if isinstance(file, str):
+            with open(file, 'w') as output:
+                PDBFile.writeFile(topology, positions, output, keepIds, extraParticleIdentifier)
+        else:
+            PDBFile.writeHeader(topology, file)
+            PDBFile.writeModel(topology, positions, file, keepIds=keepIds, extraParticleIdentifier=extraParticleIdentifier)
+            PDBFile.writeFooter(topology, file)
 
     @staticmethod
     def writeHeader(topology, file=sys.stdout):
@@ -339,10 +343,12 @@ class PDBFile(object):
             raise ValueError('The number of positions must match the number of atoms')
         if is_quantity(positions):
             positions = positions.value_in_unit(angstroms)
-        if any(math.isnan(norm(pos)) for pos in positions):
-            raise ValueError('Particle position is NaN')
-        if any(math.isinf(norm(pos)) for pos in positions):
-            raise ValueError('Particle position is infinite')
+        import numpy as np
+        positions = np.asarray(positions)
+        if np.isnan(positions).any():
+            raise ValueError('Particle position is NaN.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan')
+        if np.isinf(positions).any():
+            raise ValueError('Particle position is infinite.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan')
         nonHeterogens = PDBFile._standardResidues[:]
         nonHeterogens.remove('HOH')
         atomIndex = 1
@@ -363,7 +369,7 @@ class PDBFile(object):
                 if keepIds and len(res.id) < 5:
                     resId = res.id
                 else:
-                    resId = "%4d" % ((resIndex+1)%10000)
+                    resId = _formatIndex(resIndex+1, 4)
                 if len(res.insertionCode) == 1:
                     resIC = res.insertionCode
                 else:
@@ -384,16 +390,20 @@ class PDBFile(object):
                     else:
                         atomName = atom.name
                     coords = positions[posIndex]
-                    line = "%s%5d %-4s %3s %s%4s%1s   %s%s%s  1.00  0.00          %2s  " % (
-                        recordName, atomIndex%100000, atomName, resName, chainName, resId, resIC, _format_83(coords[0]),
-                        _format_83(coords[1]), _format_83(coords[2]), symbol)
+                    if atom.formalCharge is not None:
+                        formalCharge = ("%+2d" % atom.formalCharge)[::-1]
+                    else:
+                        formalCharge = '  '
+                    line = "%s%5s %-4s %3s %s%4s%1s   %s%s%s  1.00  0.00          %2s%2s" % (
+                        recordName, _formatIndex(atomIndex, 5), atomName, resName, chainName, resId, resIC, _format_83(coords[0]),
+                        _format_83(coords[1]), _format_83(coords[2]), symbol, formalCharge)
                     if len(line) != 80:
                         raise ValueError('Fixed width overflow detected')
                     print(line, file=file)
                     posIndex += 1
                     atomIndex += 1
                 if resIndex == len(residues)-1:
-                    print("TER   %5d      %3s %s%4s" % (atomIndex, resName, chainName, resId), file=file)
+                    print("TER   %5s      %3s %s%4s" % (_formatIndex(atomIndex, 5), resName, chainName, resId), file=file)
                     atomIndex += 1
         if modelIndex is not None:
             print("ENDMDL", file=file)
@@ -450,11 +460,11 @@ class PDBFile(object):
             for index1 in sorted(atomBonds):
                 bonded = atomBonds[index1]
                 while len(bonded) > 4:
-                    print("CONECT%5d%5d%5d%5d" % (index1, bonded[0], bonded[1], bonded[2]), file=file)
+                    print("CONECT%5s%5s%5s%5s" % (_formatIndex(index1, 5), _formatIndex(bonded[0], 5), _formatIndex(bonded[1], 5), _formatIndex(bonded[2], 5)), file=file)
                     del bonded[:4]
-                line = "CONECT%5d" % index1
+                line = "CONECT%5s" % _formatIndex(index1, 5)
                 for index2 in bonded:
-                    line = "%s%5d" % (line, index2)
+                    line = "%s%5s" % (line, _formatIndex(index2, 5))
                 print(line, file=file)
         print("END", file=file)
 
@@ -470,3 +480,14 @@ def _format_83(f):
         return ('%8.3f' % f)[:8]
     raise ValueError('coordinate "%s" could not be represented '
                      'in a width-8 field' % f)
+
+def _formatIndex(index, places):
+    """Create a string representation of an atom or residue index.  If the value is larger than can fit
+    in the available space, switch to hex.
+    """
+    if index < 10**places:
+        format = f'%{places}d'
+        return format % index
+    format = f'%{places}X'
+    shiftedIndex = (index - 10**places + 10*16**(places-1)) % (16**places)
+    return format % shiftedIndex

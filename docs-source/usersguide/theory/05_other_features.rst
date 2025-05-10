@@ -4,6 +4,8 @@ Other Features
 ##############
 
 
+.. _periodic-boundary-conditions:
+
 Periodic Boundary Conditions
 ****************************
 
@@ -115,6 +117,8 @@ the equations of motion, but can still be queried efficiently.  To do this,
 call :code:`setIntegrationForceGroups()` on the :class:`Integrator`.  Any groups
 omitted will be ignored during simulation, but can be queried at any time by
 calling :code:`getState()`.
+
+.. _virtual-sites:
 
 Virtual Sites
 *************

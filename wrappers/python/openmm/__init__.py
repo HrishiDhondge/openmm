@@ -13,8 +13,13 @@ from . import version
 
 if sys.platform == 'win32':
     _path = os.environ['PATH']
-    os.environ['PATH'] = '%(lib)s;%(lib)s\plugins;%(path)s' % {
+    os.environ['PATH'] = r'%(lib)s;%(lib)s\plugins;%(path)s' % {
         'lib': version.openmm_library_path, 'path': _path}
+    try:
+        with os.add_dll_directory(version.openmm_library_path):
+            from . import _openmm
+    except:
+        pass
 
 from openmm.openmm import *
 from openmm.vec3 import Vec3

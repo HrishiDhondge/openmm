@@ -12,7 +12,7 @@ Context constructor:
 
 .. code-block:: c
 
-    Platform& platform = Platform::getPlatformByName("OpenCL");
+    Platform& platform = Platform::getPlatform("OpenCL");
     map<string, string> properties;
     properties["DeviceIndex"] = "1";
     Context context(system, integrator, platform, properties);
@@ -35,9 +35,7 @@ The OpenCL Platform recognizes the following Platform-specific properties:
   is the most accurate option, but is usually much slower than the others.
 * UseCpuPme: This selects whether to use the CPU-based PME
   implementation.  The allowed values are “true” or “false”.  Depending on your
-  hardware, this might (or might not) improve performance.  To use this option,
-  you must have FFTW (single precision, multithreaded) installed, and your CPU
-  must support SSE 4.1.
+  hardware, this might (or might not) improve performance.
 * OpenCLPlatformIndex: When multiple OpenCL implementations are installed on
   your computer, this is used to select which one to use.  The value is the
   zero-based index of the platform (in the OpenCL sense, not the OpenMM sense) to use,
@@ -74,22 +72,7 @@ The CUDA Platform recognizes the following Platform-specific properties:
   is the most accurate option, but is usually much slower than the others.
 * UseCpuPme: This selects whether to use the CPU-based PME implementation.
   The allowed values are “true” or “false”.  Depending on your hardware, this
-  might (or might not) improve performance.  To use this option, you must have
-  FFTW (single precision, multithreaded) installed, and your CPU must support SSE
-  4.1.
-* CudaCompiler: This specifies the path to the CUDA kernel compiler.  Versions
-  of CUDA before 7.0 require a separate compiler executable.  If you do
-  not specify this, OpenMM will try to locate the compiler itself.  Specify this
-  only when you want to override the default location.  The logic used to pick the
-  default location depends on the operating system:
-
-  * Mac/Linux: It first looks for an environment variable called
-    OPENMM_CUDA_COMPILER.  If that is set, its value is used.  Otherwise, the
-    default location is set to /usr/local/cuda/bin/nvcc.
-  * Windows: It looks for an environment variable called CUDA_BIN_PATH, then
-    appends \nvcc.exe to it.  That environment variable is set by the CUDA
-    installer, so it usually is present.
-
+  might (or might not) improve performance.
 * TempDirectory: This specifies a directory where temporary files can be
   written while compiling kernels.  OpenMM usually can locate your operating
   system’s temp directory automatically (for example, by looking for the TEMP
@@ -123,6 +106,12 @@ values.  For example,
 
 This tells it to use both devices 0 and 1, splitting the work between them.
 
+HIP Platform
+************
+
+The HIP Platform recognizes exactly the same Platform-specific properties as
+the CUDA platform.
+
 CPU Platform
 ************
 
@@ -145,7 +134,7 @@ The CPU Platform recognizes the following Platform-specific properties:
 Determinism
 ***********
 
-Whether a simulation is deterministic will depend on what plaform you run on in
+Whether a simulation is deterministic will depend on what platform you run on in
 addition to what settings/methods you use. For instance, as of this writing,
 using PME on the Reference, OpenCL, and double-precision CUDA will result in
 deterministic simulations. Single-precision CUDA and CPU platforms are not

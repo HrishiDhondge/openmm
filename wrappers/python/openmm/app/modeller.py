@@ -6,9 +6,9 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2021 Stanford University and the Authors.
+Portions copyright (c) 2012-2025 Stanford University and the Authors.
 Authors: Peter Eastman
-Contributors:
+Contributors: 
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
@@ -48,7 +48,7 @@ import random
 import sys
 import xml.etree.ElementTree as etree
 from copy import deepcopy
-from math import ceil, floor
+from math import ceil, floor, sqrt
 from collections import defaultdict
 
 class Modeller(object):
@@ -113,11 +113,11 @@ class Modeller(object):
             for residue in chain.residues():
                 newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
                 for atom in residue.atoms():
-                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                     newAtoms[atom] = newAtom
                     newPositions.append(deepcopy(self.positions[atom.index]))
         for bond in self.topology.bonds():
-            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
 
         # Add the new model
 
@@ -127,11 +127,11 @@ class Modeller(object):
             for residue in chain.residues():
                 newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
                 for atom in residue.atoms():
-                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                     newAtoms[atom] = newAtom
                     newPositions.append(deepcopy(addPositions[atom.index]))
         for bond in addTopology.bonds():
-            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
         self.topology = newTopology
         self.positions = newPositions
 
@@ -172,13 +172,13 @@ class Modeller(object):
                                 if needNewResidue:
                                     newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
                                     needNewResidue = False;
-                                newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                                newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                                 newAtoms[atom] = newAtom
                                 newPositions.append(deepcopy(self.positions[atom.index]))
         for bond in self.topology.bonds():
             if bond[0] in newAtoms and bond[1] in newAtoms:
                 if bond not in deleteSet and (bond[1], bond[0]) not in deleteSet:
-                    newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+                    newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
         self.topology = newTopology
         self.positions = newPositions
 
@@ -248,16 +248,16 @@ class Modeller(object):
                 else:
                     # Just copy the residue over.
                     for atom in residue.atoms():
-                        newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                        newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                         newAtoms[atom] = newAtom
                         newPositions.append(deepcopy(self.positions[atom.index]))
         for bond in self.topology.bonds():
             if bond[0] in newAtoms and bond[1] in newAtoms:
-                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
         self.topology = newTopology
         self.positions = newPositions
 
-    def _addIons(self, forcefield, numWaters, replaceableMols, ionCutoff=0.05*nanometer, positiveIon='Na+', negativeIon='Cl-', ionicStrength=0*molar, neutralize=True):
+    def _addIons(self, forcefield, numWaters, replaceableMols, ionCutoff=0.05*nanometer, positiveIon='Na+', negativeIon='Cl-', ionicStrength=0*molar, neutralize=True, residueTemplates=dict()):
         """Adds ions to the system by replacing certain molecules.
 
         Parameters
@@ -281,6 +281,12 @@ class Modeller(object):
             Note that only monovalent ions are currently supported.
         neutralize : bool=True
             whether to add ions to neutralize the system
+        residueTemplates : dict=dict()
+            specifies which template the ForceField should use for particular residues.  The keys
+            should be Residue objects from the Topology, and the values should be the names of the
+            templates to use for them.  This is useful when a ForceField contains multiple templates
+            that can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
         """
 
         posIonElements = {'Cs+': elem.cesium, 'K+': elem.potassium,
@@ -302,7 +308,7 @@ class Modeller(object):
         negativeElement = negIonElements[negativeIon]
 
         # Determine the total charge of the system
-        system = forcefield.createSystem(self.topology)
+        system = forcefield.createSystem(self.topology, residueTemplates=residueTemplates)
         for i in range(system.getNumForces()):
             if isinstance(system.getForce(i), NonbondedForce):
                 nonbonded = system.getForce(i)
@@ -375,8 +381,8 @@ class Modeller(object):
             self.topology = modeller.topology
             self.positions = modeller.positions
 
-    def addSolvent(self, forcefield, model='tip3p', boxSize=None, boxVectors=None, padding=None, numAdded=None, positiveIon='Na+', negativeIon='Cl-', ionicStrength=0*molar, neutralize=True):
-        """Add solvent (both water and ions) to the model to fill a rectangular box.
+    def addSolvent(self, forcefield, model='tip3p', boxSize=None, boxVectors=None, padding=None, numAdded=None, boxShape='cube', positiveIon='Na+', negativeIon='Cl-', ionicStrength=0*molar, neutralize=True, residueTemplates=dict()):
+        """Add solvent (both water and ions) to the model to fill a periodic box.
 
         The algorithm works as follows:
 
@@ -390,18 +396,33 @@ class Modeller(object):
 
         1. You can explicitly give the vectors defining the periodic box to use.
         2. Alternatively, for a rectangular box you can simply give the dimensions of the unit cell.
-        3. You can give a padding distance.  The largest dimension of the solute (along the x, y, or z axis) is determined, and a cubic
-           box of size (largest dimension)+2*padding is used.
-        4. You can specify the total number of molecules (both waters and ions) to add.  A cubic box is then created whose size is
+        3. You can give a padding distance.  A bounding sphere containing the solute is determined, and the box size is
+           set to (sphere diameter)+(padding).  This guarantees no atom in the solute will come closer than the padding
+           distance to any atom of another periodic copy.  If the sphere diameter is less than the padding distance,
+           the box size is set to 2*(padding) to ensure no atom is closer than the padding distance to two periodic
+           copies of any other atom.
+        4. You can specify the total number of molecules (both waters and ions) to add.  A box is then created whose size is
            just large enough hold the specified amount of solvent.
         5. Finally, if none of the above options is specified, the existing Topology's box vectors are used.
+
+        When specifying either a padding distance or a number of molecules, you can specify a shape for the periodic box:
+        cubic, rhombic dodecahedron, or truncated octahedron.  Using a non-rectangular box allows the same distance
+        between periodic copies to be achieved with a smaller box.  The most compact option is a rhombic dodecahedron,
+        for which the box volume is 70.7% the volume of a cubic box with the same amount of padding.
+
+        There exist many different water models, many of which are very similar to each other. This method creates
+        preequilibrated water boxes for a limited set of water models. In most cases, they work equally well for other models
+        that involve the same number of particles. For example, to simulate a box of TIP3P-FB water, use this method to
+        create a box of TIP3P water, construct a System using TIP3P-FB parameters, and perform a local energy minimization
+        to correct for the small differences between the models. Likewise, a box of TIP4P-Ew water can be used for most
+        four site water models.
 
         Parameters
         ----------
         forcefield : ForceField
             the ForceField to use for determining van der Waals radii and atomic charges
         model : str='tip3p'
-            the water model to use.  Supported values are 'tip3p', 'spce', 'tip4pew', and 'tip5p'.
+            the water model to use.  Supported values are 'tip3p', 'spce', 'tip4pew', 'tip5p', and 'swm4ndp' (polarizable).
         boxSize : Vec3=None
             the size of the box to fill with water
         boxVectors : tuple of Vec3=None
@@ -410,6 +431,9 @@ class Modeller(object):
             the padding distance to use
         numAdded : int=None
             the total number of molecules (waters and ions) to add
+        boxShape: str='cube'
+            the box shape to use.  Allowed values are 'cube', 'dodecahedron', and 'octahedron'.  If padding and numAdded
+            are both None, this is ignored.
         positiveIon : string='Na+'
             the type of positive ion to add.  Allowed values are 'Cs+', 'K+', 'Li+', 'Na+', and 'Rb+'
         negativeIon : string='Cl-'
@@ -421,6 +445,12 @@ class Modeller(object):
             Note that only monovalent ions are currently supported.
         neutralize : bool=True
             whether to add ions to neutralize the system
+        residueTemplates : dict=dict()
+            specifies which template the ForceField should use for particular residues.  The keys
+            should be Residue objects from the Topology, and the values should be the names of the
+            templates to use for them.  This is useful when a ForceField contains multiple templates
+            that can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
         """
         if len([x for x in (boxSize, boxVectors, padding, numAdded) if x is not None]) > 1:
             raise ValueError('At most one of the following arguments may be specified: boxSize, boxVectors, padding, numAdded')
@@ -436,6 +466,8 @@ class Modeller(object):
             waterRadius = 0.315365*vdwRadiusPerSigma
         elif model == 'tip5p':
             waterRadius = 0.312*vdwRadiusPerSigma
+        elif model == 'swm4ndp':
+            waterRadius = 0.318395*vdwRadiusPerSigma
         else:
             raise ValueError('Unknown water model: %s' % model)
         pdb = PDBFile(os.path.join(os.path.dirname(__file__), 'data', model+'.pdb'))
@@ -449,7 +481,7 @@ class Modeller(object):
         if numAdded is not None:
             # Select a padding distance which is guaranteed to give more than the specified number of molecules.
 
-            padding = 1.1*(numAdded/((len(pdbResidues)/pdbBoxSize[0]**3)*8))**(1.0/3.0)
+            padding = 2.2*(numAdded/((len(pdbResidues)/pdbBoxSize[0]**3)*8))**(1.0/3.0)
             if padding < 0.5:
                 padding = 0.5 # Ensure we have enough when adding very small numbers of molecules
         if boxVectors is not None:
@@ -466,12 +498,16 @@ class Modeller(object):
             if is_quantity(padding):
                 padding = padding.value_in_unit(nanometer)
             if len(self.positions) == 0:
-                maxSize = 0
+                radius = 0
             else:
-                maxSize = max(max((pos[i] for pos in self.positions))-min((pos[i] for pos in self.positions)) for i in range(3))
-                maxSize = maxSize.value_in_unit(nanometer)
-            box = (maxSize+2*padding)*Vec3(1, 1, 1)
-            vectors = (Vec3(maxSize+2*padding, 0, 0), Vec3(0, maxSize+2*padding, 0), Vec3(0, 0, maxSize+2*padding))
+                positions = self.positions.value_in_unit(nanometer)
+                minRange = Vec3(*(min((pos[i] for pos in positions)) for i in range(3)))
+                maxRange = Vec3(*(max((pos[i] for pos in positions)) for i in range(3)))
+                center = 0.5*(minRange+maxRange)
+                radius = max(unit.norm(center-pos) for pos in positions)
+            width = max(2*radius+padding, 2*padding)
+            vectors = self._computeBoxVectors(width, boxShape)
+            box = Vec3(vectors[0][0], vectors[1][1], vectors[2][2])
         else:
             box = self.topology.getUnitCellDimensions().value_in_unit(nanometer)
             vectors = self.topology.getPeriodicBoxVectors().value_in_unit(nanometer)
@@ -480,7 +516,7 @@ class Modeller(object):
 
         # Have the ForceField build a System for the solute from which we can determine van der Waals radii.
 
-        system = forcefield.createSystem(self.topology)
+        system = forcefield.createSystem(self.topology, residueTemplates=residueTemplates)
         nonbonded = None
         for i in range(system.getNumForces()):
             if isinstance(system.getForce(i), NonbondedForce):
@@ -504,16 +540,19 @@ class Modeller(object):
         newTopology.setPeriodicBoxVectors(vectors*nanometer)
         newAtoms = {}
         newPositions = []*nanometer
+        newResidueTemplates=dict()
         for chain in self.topology.chains():
             newChain = newTopology.addChain(chain.id)
             for residue in chain.residues():
                 newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
+                if residue in residueTemplates:
+                    newResidueTemplates[newResidue] = residueTemplates[residue]
                 for atom in residue.atoms():
-                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                    newAtom = newTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                     newAtoms[atom] = newAtom
                     newPositions.append(deepcopy(self.positions[atom.index]))
         for bond in self.topology.bonds():
-            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+            newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
 
         # Sort the solute atoms into cells for fast lookup.
 
@@ -570,7 +609,7 @@ class Modeller(object):
 
             maxSize = max(max((pos[i] for index, pos in addedWaters))-min((pos[i] for index, pos in addedWaters)) for i in range(3))
             maxSize += 0.1  # Add padding to reduce clashes at the edge.
-            newTopology.setUnitCellDimensions(Vec3(maxSize, maxSize, maxSize))
+            newTopology.setPeriodicBoxVectors(self._computeBoxVectors(maxSize, boxShape))
         else:
             # There could be clashes between water molecules at the box edges.  Find ones to remove.
 
@@ -580,7 +619,7 @@ class Modeller(object):
             filteredWaters = []
             cells.cells = {}
             for i in range(len(lowerSkinPositions)):
-                cell = tuple((int(floor(lowerSkinPositions[i][j]/cells.cellSize[j]))%cells.numCells[j] for j in range(3)))
+                cell = cells.cellForPosition(lowerSkinPositions[i])
                 if cell in cells.cells:
                     cells.cells[cell].append(i)
                 else:
@@ -595,7 +634,7 @@ class Modeller(object):
             addedWaters = filteredWaters
 
         # Add the water molecules.
-
+        waterPos = {}
         for index, pos in addedWaters:
             newResidue = newTopology.addResidue(residue.name, newChain)
             residue = pdbResidues[index]
@@ -605,6 +644,8 @@ class Modeller(object):
             for atom in residue.atoms():
                 molAtoms.append(newTopology.addAtom(atom.name, atom.element, newResidue))
                 newPositions.append((pos+pdbPositions[atom.index]-oPos)*nanometer)
+                if atom.element == elem.oxygen:
+                    waterPos[newResidue] = newPositions[-1]
             for atom1 in molAtoms:
                 if atom1.element == elem.oxygen:
                     for atom2 in molAtoms:
@@ -614,21 +655,22 @@ class Modeller(object):
         self.topology = newTopology
         self.positions = newPositions
 
-        # Convert water list to dictionary (residue:position)
-        waterPos = {}
-        _oxygen = elem.oxygen
-        for chain in newTopology.chains():
-            for residue in chain.residues():
-                if residue.name == 'HOH':
-                    for atom in residue.atoms():
-                        if atom.element == _oxygen:
-                            waterPos[residue] = newPositions[atom.index]
-
         # Total number of waters in the box
         numTotalWaters = len(waterPos)
 
         # Add ions to neutralize the system.
-        self._addIons(forcefield, numTotalWaters, waterPos, positiveIon=positiveIon, negativeIon=negativeIon, ionicStrength=ionicStrength, neutralize=neutralize)
+        self._addIons(forcefield, numTotalWaters, waterPos, positiveIon=positiveIon, negativeIon=negativeIon, ionicStrength=ionicStrength, neutralize=neutralize, residueTemplates=newResidueTemplates)
+
+    def _computeBoxVectors(self, width, boxShape):
+        """Compute the periodic box vectors given a box width and shape."""
+        if boxShape == 'cube':
+            return (Vec3(width, 0, 0), Vec3(0, width, 0), Vec3(0, 0, width))
+        elif boxShape == 'dodecahedron':
+            return (Vec3(width, 0, 0), Vec3(0, width, 0), Vec3(0.5, 0.5, 0.5*sqrt(2))*width)
+        elif boxShape == 'octahedron':
+            return (Vec3(width, 0, 0), Vec3(1/3, 2*sqrt(2)/3, 0)*width, Vec3(-1/3, sqrt(2)/3, sqrt(6)/3)*width)
+        else:
+            raise ValueError(f'Illegal box shape: {boxShape}')
 
     class _ResidueData:
         """Inner class used to encapsulate data about the hydrogens for a residue."""
@@ -694,7 +736,16 @@ class Modeller(object):
                     terminal = hydrogen.attrib['terminal']
                 data.hydrogens.append(Modeller._Hydrogen(hydrogen.attrib['name'], hydrogen.attrib['parent'], maxph, atomVariants, terminal))
 
-    def addHydrogens(self, forcefield=None, pH=7.0, variants=None, platform=None):
+    @staticmethod
+    def _loadStandardHydrogenDefinitions():
+        """Load the definitions of hydrogens for standard residues.  Normally there is no need to call this directly.
+        It is automatically called by addHydrogens().  If the definitions have already been loaded, this returns without
+        doing anything."""
+        if not Modeller._hasLoadedStandardHydrogens:
+            Modeller.loadHydrogenDefinitions(os.path.join(os.path.dirname(__file__), 'data', 'hydrogens.xml'))
+            Modeller._hasLoadedStandardHydrogens = True
+
+    def addHydrogens(self, forcefield=None, pH=7.0, variants=None, platform=None, residueTemplates=dict()):
         """Add missing hydrogens to the model.
 
         Some residues can exist in multiple forms depending on the pH and properties of the local environment.  These
@@ -756,10 +807,20 @@ class Modeller(object):
             length must equal the number of residues in the model.  variants[i]
             is the name of the variant to use for residue i (indexed starting at
             0). If an element is None, the standard rules will be followed to
-            select a variant for that residue.
+            select a variant for that residue.  Alternatively, an element may specify
+            exactly which hydrogens to add.  In that case, variants[i] should be
+            a list of tuples [(name1, parent1), (name2, parent2), ...].  Each
+            tuple specifies the name of a hydrogen and the name of the parent atom
+            it should be bonded to.
         platform : Platform=None
             the Platform to use when computing the hydrogen atom positions.  If
             this is None, the default Platform will be used.
+        residueTemplates : dict=dict()
+            specifies which template the ForceField should use for particular residues.  The keys
+            should be Residue objects from the Topology, and the values should be the names of the
+            templates to use for them.  This is useful when a ForceField contains multiple templates
+            that can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
 
         Returns
         -------
@@ -779,8 +840,7 @@ class Modeller(object):
 
         # Load the residue specifications.
 
-        if not Modeller._hasLoadedStandardHydrogens:
-            Modeller.loadHydrogenDefinitions(os.path.join(os.path.dirname(__file__), 'data', 'hydrogens.xml'))
+        Modeller._loadStandardHydrogenDefinitions()
 
         # Make a list of atoms bonded to each atom.
 
@@ -808,18 +868,23 @@ class Modeller(object):
         newTopology.setPeriodicBoxVectors(self.topology.getPeriodicBoxVectors())
         newAtoms = {}
         newPositions = []*nanometer
+        newResidueTemplates = {}
         newIndices = []
         acceptors = [atom for atom in self.topology.atoms() if atom.element in (elem.oxygen, elem.nitrogen)]
+        positions = self.positions.value_in_unit(nanometer)
+        acceptorPositions = [positions[a.index] for a in acceptors]
+        cells = _CellList(acceptorPositions, 0.35, None, False)
         for chain in self.topology.chains():
             newChain = newTopology.addChain(chain.id)
             for residue in chain.residues():
                 newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
+                if residue in residueTemplates:
+                    newResidueTemplates[newResidue] = residueTemplates[residue]
                 isNTerminal = (residue == chain._residues[0])
                 isCTerminal = (residue == chain._residues[-1])
-                if residue.name in Modeller._residueHydrogens:
+                if residue.name in Modeller._residueHydrogens or isinstance(variants[residue.index], list):
                     # Add hydrogens.  First select which variant to use.
 
-                    spec = Modeller._residueHydrogens[residue.name]
                     variant = variants[residue.index]
                     if variant is None:
                         if residue.name == 'CYS':
@@ -865,22 +930,35 @@ class Modeller(object):
 
                                 nd1IsBonded = False
                                 ne2IsBonded = False
-                                for acceptor in acceptors:
+                                for acceptorIndex in cells.neighbors(nd1Pos.value_in_unit(nanometer)):
+                                    acceptor = acceptors[acceptorIndex]
                                     if acceptor.residue != residue:
                                         acceptorPos = self.positions[acceptor.index]
                                         if isHbond(nd1Pos, hd1Pos, acceptorPos):
                                             nd1IsBonded = True
                                             break
-                                        if isHbond(ne2Pos, he2Pos, acceptorPos):
-                                            ne2IsBonded = True
+                                if not nd1IsBonded:
+                                    for acceptorIndex in cells.neighbors(ne2Pos.value_in_unit(nanometer)):
+                                        acceptor = acceptors[acceptorIndex]
+                                        if acceptor.residue != residue:
+                                            acceptorPos = self.positions[acceptor.index]
+                                            if isHbond(ne2Pos, he2Pos, acceptorPos):
+                                                nd1IsBonded = True
+                                                break
                                 if ne2IsBonded and not nd1IsBonded:
                                     variant = 'HIE'
                                 else:
                                     variant = 'HID'
                         elif residue.name == 'HIS':
                             variant = 'HIP'
-                    if variant is not None and variant not in spec.variants:
-                        raise ValueError('Illegal variant for %s residue: %s' % (residue.name, variant))
+                    if isinstance(variant, list):
+                        spec = Modeller._ResidueData(residue.name)
+                        infinity = float('Inf')
+                        spec.hydrogens = [Modeller._Hydrogen(name, parent, infinity, None, None) for name, parent in variant]
+                    else:
+                        spec = Modeller._residueHydrogens[residue.name]
+                        if variant is not None and variant not in spec.variants:
+                            raise ValueError('Illegal variant for %s residue: %s' % (residue.name, variant))
                     actualVariants[residue.index] = variant
                     removeExtraHydrogens = (variants[residue.index] is not None)
 
@@ -955,7 +1033,7 @@ class Modeller(object):
                         newPositions.append(deepcopy(self.positions[atom.index]))
         for bond in self.topology.bonds():
             if bond[0] in newAtoms and bond[1] in newAtoms:
-                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
 
         # The hydrogens were added at random positions.  Now perform an energy minimization to fix them up.
 
@@ -964,8 +1042,7 @@ class Modeller(object):
         if forcefield is not None:
             # Use the ForceField the user specified.
 
-            system = forcefield.createSystem(newTopology, rigidWater=False, nonbondedMethod=CutoffNonPeriodic)
-            atoms = list(newTopology.atoms())
+            system = forcefield.createSystem(newTopology, rigidWater=False, nonbondedMethod=CutoffNonPeriodic, residueTemplates=newResidueTemplates)
             for i in range(system.getNumParticles()):
                 if i not in addedH:
                     # Existing atom, make it immobile.
@@ -1020,11 +1097,11 @@ class Modeller(object):
         context.setPositions(newPositions)
         LocalEnergyMinimizer.minimize(context, 1.0, 50)
         self.topology = newTopology
-        self.positions = context.getState(getPositions=True).getPositions()
+        self.positions = context.getState(positions=True).getPositions()
         del context
         return actualVariants
 
-    def addExtraParticles(self, forcefield, ignoreExternalBonds=False):
+    def addExtraParticles(self, forcefield, ignoreExternalBonds=False, residueTemplates=dict()):
         """Add missing extra particles to the model that are required by a force
         field.
 
@@ -1047,6 +1124,12 @@ class Modeller(object):
             If true, ignore external bonds when matching residues to templates.
             This is useful when the Topology represents one piece of a larger
             molecule, so chains are not terminated properly.
+        residueTemplates : dict=dict()
+            specifies which template the ForceField should use for particular residues.  The keys
+            should be Residue objects from the Topology, and the values should be the names of the
+            templates to use for them.  This is useful when a ForceField contains multiple templates
+            that can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
         """
         # Record which atoms are bonded to each other atom.
 
@@ -1066,7 +1149,7 @@ class Modeller(object):
 
         # Identify the template to use for each residue.
 
-        templates = forcefield._matchAllResiduesToTemplates(ForceField._SystemData(self.topology), self.topology, {}, False, True, False)
+        templates = forcefield._matchAllResiduesToTemplates(ForceField._SystemData(self.topology), self.topology, residueTemplates, False, True, False)
 
         # Create the new Topology.
 
@@ -1074,11 +1157,14 @@ class Modeller(object):
         newTopology.setPeriodicBoxVectors(self.topology.getPeriodicBoxVectors())
         newAtoms = {}
         newPositions = []*nanometer
+        newResidueTemplates = {}
         missingPositions = set()
         for chain in self.topology.chains():
             newChain = newTopology.addChain(chain.id)
             for residue in chain.residues():
                 newResidue = newTopology.addResidue(residue.name, newChain, residue.id, residue.insertionCode)
+                if residue in residueTemplates:
+                    newResidueTemplates[newResidue] = residueTemplates[residue]
                 template = templates[residue.index]
                 if len(template.atoms) == len(list(residue.atoms())):
                     # Just copy the residue over.
@@ -1122,24 +1208,31 @@ class Modeller(object):
                                 if site.index == index:
                                     # This is a virtual site.  Compute its position by the correct rule.
 
-                                    if site.type == 'average2':
-                                        position = site.weights[0]*templateAtomPositions[site.atoms[0]] + site.weights[1]*templateAtomPositions[site.atoms[1]]
-                                    elif site.type == 'average3':
-                                        position = site.weights[0]*templateAtomPositions[site.atoms[0]] + site.weights[1]*templateAtomPositions[site.atoms[1]] + site.weights[2]*templateAtomPositions[site.atoms[2]]
-                                    elif site.type == 'outOfPlane':
-                                        v1 = templateAtomPositions[site.atoms[1]] - templateAtomPositions[site.atoms[0]]
-                                        v2 = templateAtomPositions[site.atoms[2]] - templateAtomPositions[site.atoms[0]]
-                                        cross = Vec3(v1[1]*v2[2]-v1[2]*v2[1], v1[2]*v2[0]-v1[0]*v2[2], v1[0]*v2[1]-v1[1]*v2[0])
-                                        position = templateAtomPositions[site.atoms[0]] + site.weights[0]*v1 + site.weights[1]*v2 + site.weights[2]*cross
-                                    elif site.type == 'localCoords':
-                                        origin = templateAtomPositions[site.atoms[0]]*site.originWeights[0] + templateAtomPositions[site.atoms[1]]*site.originWeights[1] + templateAtomPositions[site.atoms[2]]*site.originWeights[2];
-                                        xdir = templateAtomPositions[site.atoms[0]]*site.xWeights[0] + templateAtomPositions[site.atoms[1]]*site.xWeights[1] + templateAtomPositions[site.atoms[2]]*site.xWeights[2];
-                                        ydir = templateAtomPositions[site.atoms[0]]*site.yWeights[0] + templateAtomPositions[site.atoms[1]]*site.yWeights[1] + templateAtomPositions[site.atoms[2]]*site.yWeights[2];
-                                        zdir = Vec3(xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0])
-                                        xdir /= norm(xdir);
-                                        zdir /= norm(zdir);
-                                        ydir = Vec3(zdir[1]*xdir[2]-zdir[2]*xdir[1], zdir[2]*xdir[0]-zdir[0]*xdir[2], zdir[0]*xdir[1]-zdir[1]*xdir[0])
-                                        position = origin + xdir*site.localPos[0] + ydir*site.localPos[1] + zdir*site.localPos[2];
+                                    try:
+                                        if site.type == 'average2':
+                                            position = site.weights[0]*templateAtomPositions[site.atoms[0]] + site.weights[1]*templateAtomPositions[site.atoms[1]]
+                                        elif site.type == 'average3':
+                                            position = site.weights[0]*templateAtomPositions[site.atoms[0]] + site.weights[1]*templateAtomPositions[site.atoms[1]] + site.weights[2]*templateAtomPositions[site.atoms[2]]
+                                        elif site.type == 'outOfPlane':
+                                            v1 = templateAtomPositions[site.atoms[1]] - templateAtomPositions[site.atoms[0]]
+                                            v2 = templateAtomPositions[site.atoms[2]] - templateAtomPositions[site.atoms[0]]
+                                            cross = Vec3(v1[1]*v2[2]-v1[2]*v2[1], v1[2]*v2[0]-v1[0]*v2[2], v1[0]*v2[1]-v1[1]*v2[0])
+                                            position = templateAtomPositions[site.atoms[0]] + site.weights[0]*v1 + site.weights[1]*v2 + site.weights[2]*cross
+                                        elif site.type == 'localCoords':
+                                            origin = unit.sum([templateAtomPositions[atom]*weight for atom, weight in zip(site.atoms, site.originWeights)])
+                                            xdir = unit.sum([templateAtomPositions[atom]*weight for atom, weight in zip(site.atoms, site.xWeights)])
+                                            ydir = unit.sum([templateAtomPositions[atom]*weight for atom, weight in zip(site.atoms, site.yWeights)])
+                                            zdir = Vec3(xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0])
+                                            xdir /= norm(xdir)
+                                            zdir /= norm(zdir)
+                                            ydir = Vec3(zdir[1]*xdir[2]-zdir[2]*xdir[1], zdir[2]*xdir[0]-zdir[0]*xdir[2], zdir[0]*xdir[1]-zdir[1]*xdir[0])
+                                            position = origin + xdir*site.localPos[0] + ydir*site.localPos[1] + zdir*site.localPos[2]
+                                    except:
+                                        # This can happen if the virtual site depends on another virtual site whose position
+                                        # hasn't been set yet.  Ignore the error.  We'll put it at a random position (see below),
+                                        # which will get replaced with the correct position at the start of the simulation.
+
+                                        pass
                             if position is None and atom.type in drudeTypeMap:
                                 # This is a Drude particle.  Put it on top of its parent atom.
 
@@ -1173,13 +1266,13 @@ class Modeller(object):
 
         for bond in self.topology.bonds():
             if bond[0] in newAtoms and bond[1] in newAtoms:
-                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]])
+                newTopology.addBond(newAtoms[bond[0]], newAtoms[bond[1]], bond.type, bond.order)
 
         if len(missingPositions) > 0:
             # There were particles whose position we couldn't identify before, since they were neither virtual sites nor Drude particles.
             # Try to figure them out based on bonds.  First, use the ForceField to create a list of every bond involving one of them.
 
-            system = forcefield.createSystem(newTopology, constraints=AllBonds)
+            system = forcefield.createSystem(newTopology, constraints=AllBonds, residueTemplates=newResidueTemplates)
             bonds = []
             for i in range(system.getNumConstraints()):
                 bond = system.getConstraintParameters(i)
@@ -1207,7 +1300,8 @@ class Modeller(object):
         self.positions = newPositions
 
 
-    def addMembrane(self, forcefield, lipidType='POPC', membraneCenterZ=0*nanometer, minimumPadding=1*nanometer, positiveIon='Na+', negativeIon='Cl-', ionicStrength=0*molar, neutralize=True):
+    def addMembrane(self, forcefield, lipidType='POPC', membraneCenterZ=0*nanometer, minimumPadding=1*nanometer, positiveIon='Na+', negativeIon='Cl-',
+                    ionicStrength=0*molar, neutralize=True, residueTemplates=dict(), platform=None):
         """Add a lipid membrane to the model.
 
         This method actually adds both a membrane and a water box.  It is best to build them together,
@@ -1259,6 +1353,15 @@ class Modeller(object):
             Note that only monovalent ions are currently supported.
         neutralize : bool=True
             whether to add ions to neutralize the system
+        residueTemplates : dict=dict()
+            specifies which template the ForceField should use for particular residues.  The keys
+            should be Residue objects from the Topology, and the values should be the names of the
+            templates to use for them.  This is useful when a ForceField contains multiple templates
+            that can match the same residue (e.g Fe2+ and Fe3+ templates in the ForceField for a
+            monoatomic iron ion in the Topology).
+        platform : Platform=None
+            the Platform to use when computing the hydrogen atom positions.  If
+            this is None, the default Platform will be used.
         """
         if 'topology' in dir(lipidType) and 'positions' in dir(lipidType):
             patch = lipidType
@@ -1397,7 +1500,7 @@ class Modeller(object):
                 lipidResNum += 1
 
                 for atom in residue.atoms():
-                    newAtom = membraneTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                    newAtom = membraneTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                     newAtoms[atom] = newAtom
                 membranePos += pos
                 for bond in resBonds[residue]:
@@ -1412,7 +1515,7 @@ class Modeller(object):
         for (residue, pos) in addedWater:
             newResidue = membraneTopology.addResidue(residue.name, solventChain, residue.id, residue.insertionCode)
             for atom in residue.atoms():
-                newAtom = membraneTopology.addAtom(atom.name, atom.element, newResidue, atom.id)
+                newAtom = membraneTopology.addAtom(atom.name, atom.element, newResidue, atom.id, atom.formalCharge)
                 newAtoms[atom] = newAtom
             membranePos += pos
             for bond in resBonds[residue]:
@@ -1424,8 +1527,8 @@ class Modeller(object):
 
         # Create a System for the lipids, then add in the protein as stationary particles.
 
-        system = forcefield.createSystem(membraneTopology, nonbondedMethod=CutoffPeriodic)
-        proteinSystem = forcefield.createSystem(self.topology, nonbondedMethod=CutoffNonPeriodic)
+        system = forcefield.createSystem(membraneTopology, nonbondedMethod=CutoffPeriodic, residueTemplates=residueTemplates)
+        proteinSystem = forcefield.createSystem(self.topology, nonbondedMethod=CutoffNonPeriodic, residueTemplates=residueTemplates)
         numMembraneParticles = system.getNumParticles()
         numProteinParticles = proteinSystem.getNumParticles()
         for i in range(numProteinParticles):
@@ -1439,6 +1542,12 @@ class Modeller(object):
                     for j in scaledProteinCells.neighbors(scaledProteinPos[i]):
                         if j < i:
                             f1.addException(i+numMembraneParticles, j+numMembraneParticles, 0.0, 1.0, 0.0)
+            elif isinstance(f1, CustomNonbondedForce):
+                for i in range(numProteinParticles):
+                    f1.addParticle(f2.getParticleParameters(i))
+                    for j in scaledProteinCells.neighbors(scaledProteinPos[i]):
+                        if j < i:
+                            f1.addExclusion(i + numMembraneParticles, j + numMembraneParticles)
         if nonbonded is None:
             raise ValueError('The ForceField does not specify a NonbondedForce')
         mergedPositions = membranePos+scaledProteinPos
@@ -1452,7 +1561,10 @@ class Modeller(object):
 
         steps = int(max(proteinSize.x, proteinSize.y)*10) + 1
         integrator = LangevinIntegrator(10.0, 50.0, 0.001)
-        context = Context(system, integrator)
+        if platform is None:
+            context = Context(system, integrator)
+        else:
+            context = Context(system, integrator, platform)
         context.setPositions(mergedPositions)
         LocalEnergyMinimizer.minimize(context, 10.0, 30)
         try:
@@ -1465,7 +1577,7 @@ class Modeller(object):
         for i in range(steps):
             weight1 = i/(steps-1)
             weight2 = 1.0-weight1
-            mergedPositions = context.getState(getPositions=True).getPositions(asNumpy=hasNumpy).value_in_unit(nanometer)
+            mergedPositions = context.getState(positions=True).getPositions(asNumpy=hasNumpy).value_in_unit(nanometer)
             if hasNumpy:
                 mergedPositions[numMembraneParticles:] = weight1*proteinPosArray + weight2*scaledProteinPosArray
             else:
@@ -1477,7 +1589,7 @@ class Modeller(object):
         # Add the membrane to the protein.
 
         modeller = Modeller(self.topology, self.positions)
-        modeller.add(membraneTopology, context.getState(getPositions=True).getPositions()[:numMembraneParticles])
+        modeller.add(membraneTopology, context.getState(positions=True).getPositions()[:numMembraneParticles])
         modeller.topology.setPeriodicBoxVectors(membraneTopology.getPeriodicBoxVectors())
         del context
         del system
@@ -1487,7 +1599,11 @@ class Modeller(object):
 
         needExtraWater = (boxSizeZ > patchSize[2])
         if needExtraWater:
-            modeller.addSolvent(forcefield, neutralize=False)
+            newResidueTemplates = {}
+            for r1, r2 in zip(self.topology.residues(), modeller.topology.residues()):
+                if r1 in residueTemplates:
+                    newResidueTemplates[r2] = residueTemplates[r1]
+            modeller.addSolvent(forcefield, neutralize=False, residueTemplates=newResidueTemplates)
 
         # Record the positions of all waters that have been added.
 
@@ -1514,6 +1630,10 @@ class Modeller(object):
             if len(toDelete) > 0:
                 modeller.delete(toDelete)
 
+        newResidueTemplates = {}
+        for r1, r2 in zip(self.topology.residues(), modeller.topology.residues()):
+            if r1 in residueTemplates:
+                newResidueTemplates[r2] = residueTemplates[r1]
         self.topology = modeller.topology
         self.positions = modeller.positions
 
@@ -1554,17 +1674,27 @@ class Modeller(object):
             if lowerZBoundary < waterZ.value_in_unit(nanometer) < upperZBoundary:
                 del waterPos[wRes]
 
-        self._addIons(forcefield, numTotalWaters, waterPos, positiveIon=positiveIon, negativeIon=negativeIon, ionicStrength=ionicStrength, neutralize=neutralize)
+        self._addIons(forcefield, numTotalWaters, waterPos, positiveIon=positiveIon, negativeIon=negativeIon, ionicStrength=ionicStrength, neutralize=neutralize, residueTemplates=newResidueTemplates)
 
 
 class _CellList(object):
     """This class organizes atom positions into cells, so the neighbors of a point can be quickly retrieved"""
 
     def __init__(self, positions, maxCutoff, vectors, periodic):
+        if vectors is None:
+            if len(positions) == 0:
+                vectors = (Vec3(maxCutoff, 0, 0), Vec3(0, maxCutoff, 0), Vec3(0, 0, maxCutoff))
+            else:
+                minPos = [min((pos[i] for pos in positions)) for i in range(3)]
+                maxPos = [max((pos[i] for pos in positions)) for i in range(3)]
+                width = [max(maxPos[i]-minPos[i], maxCutoff) for i in range(3)]
+                vectors = (Vec3(width[0], 0, 0), Vec3(0, width[1], 0), Vec3(0, 0, width[2]))
         self.positions = deepcopy(positions)
         self.cells = {}
         self.numCells = tuple((max(1, int(floor(vectors[i][i]/maxCutoff))) for i in range(3)))
         self.cellSize = tuple((vectors[i][i]/self.numCells[i] for i in range(3)))
+        self.vectors = vectors
+        self.periodic = periodic
         invBox = Vec3(1.0/vectors[0][0], 1.0/vectors[1][1], 1.0/vectors[2][2])
         for i in range(len(self.positions)):
             pos = self.positions[i]
@@ -1573,19 +1703,28 @@ class _CellList(object):
                 pos -= floor(pos[1]*invBox[1])*vectors[1]
                 pos -= floor(pos[0]*invBox[0])*vectors[0]
                 self.positions[i] = pos
-            cell = tuple((int(floor(pos[j]/self.cellSize[j]))%self.numCells[j] for j in range(3)))
+            cell = self.cellForPosition(pos)
             if cell in self.cells:
                 self.cells[cell].append(i)
             else:
                 self.cells[cell] = [i]
 
+    def cellForPosition(self, pos):
+        if self.periodic:
+            invBox = Vec3(1.0/self.vectors[0][0], 1.0/self.vectors[1][1], 1.0/self.vectors[2][2])
+            pos = pos-floor(pos[2]*invBox[2])*self.vectors[2]
+            pos -= floor(pos[1]*invBox[1])*self.vectors[1]
+            pos -= floor(pos[0]*invBox[0])*self.vectors[0]
+        return tuple((int(floor(pos[j]/self.cellSize[j]))%self.numCells[j] for j in range(3)))
+
     def neighbors(self, pos):
-        centralCell = tuple((int(floor(pos[i]/self.cellSize[i])) for i in range(3)))
+        processedCells = set()
         offsets = (-1, 0, 1)
         for i in offsets:
             for j in offsets:
                 for k in offsets:
-                    cell = ((centralCell[0]+i+self.numCells[0])%self.numCells[0], (centralCell[1]+j+self.numCells[1])%self.numCells[1], (centralCell[2]+k+self.numCells[2])%self.numCells[2])
-                    if cell in self.cells:
+                    cell = self.cellForPosition(Vec3(pos[0]+i*self.cellSize[0], pos[1]+j*self.cellSize[1], pos[2]+k*self.cellSize[2]))
+                    if cell in self.cells and cell not in processedCells:
+                        processedCells.add(cell)
                         for atom in self.cells[cell]:
                             yield atom

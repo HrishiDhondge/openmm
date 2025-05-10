@@ -5,16 +5,16 @@ channels:
 dependencies:
 # build
 - jom
-- cmake
+- cmake<4.0
 - ccache
 - m2-coreutils
 # host
 - python
 - cython
 - swig
-- fftw
 - numpy
-- doxygen 1.8.14
+- doxygen
+- setuptools
 - khronos-opencl-icd-loader
 # test
 - pytest

@@ -5,6 +5,7 @@ from openmm import *
 from openmm.unit import *
 from openmm.app.gromacstopfile import _defaultGromacsIncludeDir
 import openmm.app.element as elem
+from numpy.testing import assert_allclose
 
 GROMACS_INCLUDE = _defaultGromacsIncludeDir()
 
@@ -18,8 +19,6 @@ class TestGromacsTopFile(unittest.TestCase):
 
         # alanine dipeptide with explicit water
         self.top1 = GromacsTopFile('systems/explicit.top', unitCellDimensions=Vec3(6.223, 6.223, 6.223)*nanometers)
-        # alanine dipeptide with implicit water
-        self.top2 = GromacsTopFile('systems/implicit.top')
 
     def test_NonbondedMethod(self):
         """Test all six options for the nonbondedMethod parameter."""
@@ -46,7 +45,7 @@ class TestGromacsTopFile(unittest.TestCase):
             if isinstance(force, PeriodicTorsionForce):
                 force.setForceGroup(1)
         context = Context(system, VerletIntegrator(1*femtosecond),
-                          Platform.getPlatformByName('Reference'))
+                          Platform.getPlatform('Reference'))
         context.setPositions(gro.positions)
         ene = context.getState(getEnergy=True, groups=2**1).getPotentialEnergy()
         self.assertAlmostEqual(ene.value_in_unit(kilojoules_per_mole), 341.6905133582857)
@@ -58,7 +57,7 @@ class TestGromacsTopFile(unittest.TestCase):
         system = top.createSystem()
 
         context = Context(system, VerletIntegrator(1*femtosecond),
-                          Platform.getPlatformByName('Reference'))
+                          Platform.getPlatform('Reference'))
         context.setPositions(gro.positions)
         ene = context.getState(getEnergy=True).getPotentialEnergy()
         self.assertAlmostEqual(ene.value_in_unit(kilojoules_per_mole), -346.940915296)
@@ -73,7 +72,7 @@ class TestGromacsTopFile(unittest.TestCase):
                 f.setUseLongRangeCorrection(True)
 
         context = Context(system, VerletIntegrator(1*femtosecond),
-                          Platform.getPlatformByName('Reference'))
+                          Platform.getPlatform('Reference'))
         context.setPositions(gro.positions)
         energy = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoules_per_mole)
         self.assertAlmostEqual(energy, 3135.33, delta=energy*0.005)
@@ -95,17 +94,16 @@ class TestGromacsTopFile(unittest.TestCase):
 
     def test_SwitchingFunction(self):
         """Test using a switching function."""
-        for filename in ('systems/implicit.top', 'systems/ionic.top'):
-            top = GromacsTopFile(filename)
-            for distance in (None, 0.8*nanometers):
-                system = top.createSystem(nonbondedMethod=CutoffNonPeriodic, switchDistance=distance)
-                for f in system.getForces():
-                    if isinstance(f, NonbondedForce) or isinstance(f, CustomNonbondedForce):
-                        if distance is None:
-                            self.assertFalse(f.getUseSwitchingFunction())
-                        else:
-                            self.assertTrue(f.getUseSwitchingFunction())
-                            self.assertEqual(distance, f.getSwitchingDistance())
+        top = GromacsTopFile('systems/ionic.top')
+        for distance in (None, 0.8*nanometers):
+            system = top.createSystem(nonbondedMethod=CutoffNonPeriodic, switchDistance=distance)
+            for f in system.getForces():
+                if isinstance(f, NonbondedForce) or isinstance(f, CustomNonbondedForce):
+                    if distance is None:
+                        self.assertFalse(f.getUseSwitchingFunction())
+                    else:
+                        self.assertTrue(f.getUseSwitchingFunction())
+                        self.assertEqual(distance, f.getSwitchingDistance())
 
     def test_EwaldErrorTolerance(self):
         """Test to make sure the ewaldErrorTolerance parameter is passed correctly."""
@@ -138,37 +136,6 @@ class TestGromacsTopFile(unittest.TestCase):
                                                    rigidWater=rigidWater_value)
                 validateConstraints(self, topology, system,
                                     constraints_value, rigidWater_value)
-
-    def test_ImplicitSolvent(self):
-        """Test implicit solvent using the implicitSolvent parameter.
-
-        """
-        system = self.top2.createSystem(implicitSolvent=OBC2)
-        self.assertTrue(any(isinstance(f, GBSAOBCForce) for f in system.getForces()))
-
-    def test_ImplicitSolventParameters(self):
-        """Test that solventDielectric and soluteDielectric are passed correctly.
-
-        """
-        system = self.top2.createSystem(implicitSolvent=OBC2,
-                                           solventDielectric=50.0,
-                                           soluteDielectric = 0.9)
-        found_matching_solvent_dielectric=False
-        found_matching_solute_dielectric=False
-        for force in system.getForces():
-            if isinstance(force, GBSAOBCForce):
-                if force.getSolventDielectric() == 50.0:
-                    found_matching_solvent_dielectric = True
-                if force.getSoluteDielectric() == 0.9:
-                    found_matching_solute_dielectric = True
-                gbcharges = [force.getParticleParameters(i)[0] for i in range(system.getNumParticles())]
-            if isinstance(force, NonbondedForce):
-                self.assertEqual(force.getReactionFieldDielectric(), 1.0)
-                nbcharges = [force.getParticleParameters(i)[0] for i in range(system.getNumParticles())]
-        self.assertTrue(found_matching_solvent_dielectric and
-                        found_matching_solute_dielectric)
-        for q1, q2 in zip(gbcharges, nbcharges):
-            self.assertEqual(q1, q2)
 
     def test_HydrogenMass(self):
         """Test that altering the mass of hydrogens works correctly."""
@@ -206,12 +173,72 @@ class TestGromacsTopFile(unittest.TestCase):
         self.assertEqual(1, len(top._moleculeTypes['BENX'].vsites2))
 
         context = Context(system, VerletIntegrator(1*femtosecond),
-                          Platform.getPlatformByName('Reference'))
+                          Platform.getPlatform('Reference'))
         context.setPositions(gro.positions)
         context.computeVirtualSites()
         ene = context.getState(getEnergy=True).getPotentialEnergy()
         # the energy output is from gromacs and it only prints out 6 sig digits.
         self.assertAlmostEqual(ene.value_in_unit(kilojoules_per_mole), 1.88855e+02, places=3)
+
+    def test_Vsite3Func1(self):
+        """Test a three particle virtual site."""
+        top = GromacsTopFile('systems/tip4pew.top')
+        system = top.createSystem()
+        self.assertEqual(3, system.getNumConstraints())
+        self.assertTrue(system.isVirtualSite(3))
+        vs = system.getVirtualSite(3)
+        self.assertIsInstance(vs, ThreeParticleAverageSite)
+        self.assertEqual(0, vs.getParticle(0))
+        self.assertEqual(1, vs.getParticle(1))
+        self.assertEqual(2, vs.getParticle(2))
+        self.assertAlmostEqual(0.786646558, vs.getWeight(0))
+        self.assertAlmostEqual(0.106676721, vs.getWeight(1))
+        self.assertAlmostEqual(0.106676721, vs.getWeight(2))
+
+    def test_Vsite3Func4(self):
+        """Test a three particle virtual site."""
+        top = GromacsTopFile('systems/tip5p.top')
+        system = top.createSystem()
+        self.assertEqual(3, system.getNumConstraints())
+        for i in (3, 4):
+            self.assertTrue(system.isVirtualSite(i))
+            vs = system.getVirtualSite(i)
+            self.assertIsInstance(vs, OutOfPlaneSite)
+            self.assertEqual(0, vs.getParticle(0))
+            self.assertEqual(1, vs.getParticle(1))
+            self.assertEqual(2, vs.getParticle(2))
+            self.assertAlmostEqual(-0.344908, vs.getWeight12())
+            self.assertAlmostEqual(-0.344908, vs.getWeight13())
+            wc = -6.4437903493
+            if i == 4:
+                wc = -wc
+            self.assertAlmostEqual(wc, vs.getWeightCross())
+
+    def test_GROMOS(self):
+        """Test a system using the GROMOS 54a7 force field."""
+
+        top = GromacsTopFile('systems/1ppt.top')
+        gro = GromacsGroFile('systems/1ppt.gro')
+        system = top.createSystem()
+        for i, f in enumerate(system.getForces()):
+            f.setForceGroup(i)
+        context = Context(system, VerletIntegrator(1*femtosecond), Platform.getPlatform('Reference'))
+        context.setPositions(gro.positions)
+        energy = {}
+        for i, f in enumerate(system.getForces()):
+            energy[f.getName()] = context.getState(getEnergy=True, groups={i}).getPotentialEnergy().value_in_unit(kilojoules_per_mole)
+
+        # Compare to energies computed with GROMACS.
+
+        assert_allclose(1.12797e+03, energy['GROMOSBondForce'], rtol=1e-4)
+        assert_allclose(5.59066e+02, energy['GROMOSAngleForce'], rtol=1e-4)
+        assert_allclose(3.80152e+02, energy['PeriodicTorsionForce'], rtol=1e-4)
+        assert_allclose(9.59178e+01, energy['HarmonicTorsionForce'], rtol=1e-4)
+        assert_allclose(2.75307e+02, energy['LennardJonesExceptions'], rtol=1e-4)
+        assert_allclose(-7.53704e+02, energy['LennardJonesForce'], rtol=1e-4)
+        assert_allclose(-6.23055e+03+4.36880e+03, energy['NonbondedForce'], rtol=1e-4)
+        total = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoules_per_mole)
+        assert_allclose(-1.77020e+02, total, rtol=1e-3)
 
 if __name__ == '__main__':
     unittest.main()

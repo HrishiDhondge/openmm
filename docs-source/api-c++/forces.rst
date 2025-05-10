@@ -64,6 +64,7 @@ be combined in arbitrary ways.
     :maxdepth: 2
 
     generated/AndersenThermostat
+    generated/ATMForce
     generated/CMMotionRemover
     generated/MonteCarloAnisotropicBarostat
     generated/MonteCarloBarostat
@@ -98,3 +99,4 @@ expression.
     generated/CustomManyParticleForce
     generated/CustomNonbondedForce
     generated/CustomTorsionForce
+    generated/CustomVolumeForce

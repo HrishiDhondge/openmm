@@ -32,6 +32,7 @@
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/CustomHbondForceImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/kernels.h"
 #include "lepton/Operation.h"
 #include "lepton/Parser.h"
@@ -72,6 +73,7 @@ public:
 };
 
 CustomHbondForceImpl::CustomHbondForceImpl(const CustomHbondForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomHbondForceImpl::~CustomHbondForceImpl() {
@@ -173,13 +175,13 @@ void CustomHbondForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("CustomHbondForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("CustomHbondForce: "+Messages::cutoffTooLarge);
     }
     kernel.getAs<CalcCustomHbondForceKernel>().initialize(context.getSystem(), owner);
 }
 
 double CustomHbondForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomHbondForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }

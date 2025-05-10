@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2020 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2023 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -33,6 +33,7 @@
   #define _USE_MATH_DEFINES // Needed to get M_PI
 #endif
 #include "openmm/internal/AssertionUtilities.h"
+#include "openmm/internal/CustomIntegratorUtilities.h"
 #include "openmm/Context.h"
 #include "openmm/AndersenThermostat.h"
 #include "openmm/CustomAngleForce.h"
@@ -438,6 +439,10 @@ void testParameter() {
         integrator.step(1);
         ASSERT_EQUAL_TOL(context.getParameter("AndersenTemperature"), 0.1*(1<<(i+1)), 1e-10);
     }
+    context.setParameter("AndersenTemperature", -5.0);
+    integrator.step(1);
+    ASSERT_EQUAL(-5.0, integrator.getGlobalVariable(0));
+    ASSERT_EQUAL(-10.0, context.getParameter("AndersenTemperature"));
 }
 
 /**
@@ -1211,6 +1216,139 @@ void testSaveParameters() {
     ASSERT_EQUAL_VEC(b1[0], b3[0], 1e-6);
 }
 
+void testAnalyzeComputations() {
+    System system;
+    system.addParticle(1.0);
+    CustomBondForce* bond = new CustomBondForce("scale*r");
+    bond->addGlobalParameter("scale", 2.0);
+    bond->setForceGroup(1);
+    system.addForce(bond);
+
+    // Create a complex integrator with lots of nested blocks and steps that use or invalidate
+    // forces or energies.
+
+    CustomIntegrator integrator(0.001);
+    integrator.addGlobalVariable("color", 1.5);
+    integrator.addPerDofVariable("z", 0);
+    integrator.addComputeGlobal("color", "energy");           // 0
+    integrator.beginIfBlock("color > 1.0");                   // 1
+        integrator.addComputeGlobal("scale", "energy0");      // 2
+    integrator.endBlock();                                    // 3
+    integrator.beginIfBlock("scale < color");                 // 4
+        integrator.addComputePerDof("v", "x");                // 5
+    integrator.endBlock();                                    // 6
+    integrator.addComputePerDof("z", "f1");                   // 7
+    integrator.beginWhileBlock("energy2 > 0");                // 8
+        integrator.beginIfBlock("color = 1");                 // 9
+            integrator.addComputePerDof("v", "2*z");          // 10
+        integrator.endBlock();                                // 11
+        integrator.beginIfBlock("color = 2");                 // 12
+            integrator.addComputeGlobal("color", "color+1");  // 13
+            integrator.addUpdateContextState();               // 14
+        integrator.endBlock();                                // 15
+    integrator.endBlock();                                    // 16
+    integrator.addComputePerDof("x", "x+f");                  // 17
+
+    // Call analyzeComputations() and see if the results are what we expect.
+
+    Context context(system, integrator, platform);
+    ContextImpl* contextImpl = *reinterpret_cast<ContextImpl**>(&context);
+    vector<vector<Lepton::ParsedExpression> > expressions;
+    vector<CustomIntegratorUtilities::Comparison> comparisons;
+    vector<int> blockEnd, forceGroup;
+    vector<bool> invalidatesForces, needsForces, needsEnergy, computeBoth;
+    map<string, Lepton::CustomFunction*> functions;
+    CustomIntegratorUtilities::analyzeComputations(*contextImpl, integrator, expressions, comparisons, blockEnd, invalidatesForces,
+            needsForces, needsEnergy, computeBoth, forceGroup, functions);
+    ASSERT_EQUAL(3, blockEnd[1]);
+    ASSERT_EQUAL(6, blockEnd[4]);
+    ASSERT_EQUAL(16, blockEnd[8]);
+    ASSERT_EQUAL(11, blockEnd[9]);
+    ASSERT_EQUAL(15, blockEnd[12]);
+    for (int i = 0; i < integrator.getNumComputations(); i++) {
+        ASSERT_EQUAL(i == 2 || i == 14 || i == 17, invalidatesForces[i]);
+        ASSERT_EQUAL(i == 7 || i == 17, needsForces[i]);
+        ASSERT_EQUAL(i == 0 || i == 2 || i == 8, needsEnergy[i]);
+        ASSERT_EQUAL(i == 17, computeBoth[i]);
+        if (needsForces[i] || needsEnergy[i]) {
+            int group = -1;
+            if (i == 2)
+                group = 0;
+            else if (i == 7)
+                group = 1;
+            else if (i == 8)
+                group = 2;
+            ASSERT_EQUAL(group, forceGroup[i]);
+        }
+    }
+}
+
+/**
+ * Make sure random numbers are computed correctly when steps get merged.
+ */
+void testMergedRandoms() {
+    const int numParticles = 10;
+    const int numSteps = 10;
+    System system;
+    for (int i = 0; i < numParticles; i++)
+        system.addParticle(1.0);
+    CustomIntegrator integrator(0.1);
+    integrator.addPerDofVariable("dofUniform1", 0);
+    integrator.addPerDofVariable("dofUniform2", 0);
+    integrator.addPerDofVariable("dofGaussian1", 0);
+    integrator.addPerDofVariable("dofGaussian2", 0);
+    integrator.addGlobalVariable("globalUniform1", 0);
+    integrator.addGlobalVariable("globalUniform2", 0);
+    integrator.addGlobalVariable("globalGaussian1", 0);
+    integrator.addGlobalVariable("globalGaussian2", 0);
+    integrator.addComputePerDof("dofUniform1", "uniform");
+    integrator.addComputePerDof("dofUniform2", "uniform");
+    integrator.addComputePerDof("dofGaussian1", "gaussian");
+    integrator.addComputePerDof("dofGaussian2", "gaussian");
+    integrator.addComputeGlobal("globalUniform1", "uniform");
+    integrator.addComputeGlobal("globalUniform2", "uniform");
+    integrator.addComputeGlobal("globalGaussian1", "gaussian");
+    integrator.addComputeGlobal("globalGaussian2", "gaussian");
+    Context context(system, integrator, platform);
+    
+    // See if the random numbers are computed correctly.
+    
+    vector<Vec3> values1, values2;
+    for (int i = 0; i < numSteps; i++) {
+        integrator.step(1);
+        integrator.getPerDofVariable(0, values1);
+        integrator.getPerDofVariable(1, values2);
+        for (int i = 0; i < numParticles; i++)
+            for (int j = 0; j < 3; j++) {
+                double v1 = values1[i][j];
+                double v2 = values2[i][j];
+                ASSERT(v1 >= 0 && v1 < 1);
+                ASSERT(v2 >= 0 && v2 < 1);
+                ASSERT(v1 != v2);
+            }
+        integrator.getPerDofVariable(2, values1);
+        integrator.getPerDofVariable(3, values2);
+        for (int i = 0; i < numParticles; i++)
+            for (int j = 0; j < 3; j++) {
+                double v1 = values1[i][j];
+                double v2 = values2[i][j];
+                ASSERT(v1 >= -10 && v1 < 10);
+                ASSERT(v2 >= -10 && v2 < 10);
+                ASSERT(v1 != v2);
+            }
+        double v1 = integrator.getGlobalVariable(0);
+        double v2 = integrator.getGlobalVariable(1);
+        ASSERT(v1 >= 0 && v1 < 1);
+        ASSERT(v2 >= 0 && v2 < 1);
+        ASSERT(v1 != v2);
+        v1 = integrator.getGlobalVariable(2);
+        v2 = integrator.getGlobalVariable(3);
+        ASSERT(v1 >= -10 && v1 < 10);
+        ASSERT(v2 >= -10 && v2 < 10);
+        ASSERT(v1 != v2);
+    }
+}
+
 void runPlatformTests();
 
 int main(int argc, char* argv[]) {
@@ -1241,6 +1379,8 @@ int main(int argc, char* argv[]) {
         testInitialTemperature();
         testCheckpoint();
         testSaveParameters();
+        testAnalyzeComputations();
+        testMergedRandoms();
         runPlatformTests();
     }
     catch(const exception& e) {

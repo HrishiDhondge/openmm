@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2013-2019 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -64,6 +64,7 @@ CpuPlatform::CpuPlatform() {
     deprecatedPropertyReplacements["CpuThreads"] = CpuThreads();
     CpuKernelFactory* factory = new CpuKernelFactory();
     registerKernelFactory(CalcForcesAndEnergyKernel::Name(), factory);
+    registerKernelFactory(UpdateStateDataKernel::Name(), factory);
     registerKernelFactory(CalcHarmonicAngleForceKernel::Name(), factory);
     registerKernelFactory(CalcPeriodicTorsionForceKernel::Name(), factory);
     registerKernelFactory(CalcRBTorsionForceKernel::Name(), factory);
@@ -73,7 +74,6 @@ CpuPlatform::CpuPlatform() {
     registerKernelFactory(CalcGBSAOBCForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomGBForceKernel::Name(), factory);
     registerKernelFactory(CalcGayBerneForceKernel::Name(), factory);
-    registerKernelFactory(IntegrateLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateLangevinMiddleStepKernel::Name(), factory);
     platformProperties.push_back(CpuThreads());
     platformProperties.push_back(CpuDeterministicForces());
@@ -148,7 +148,8 @@ const CpuPlatform::PlatformData& CpuPlatform::getPlatformData(const ContextImpl&
 }
 
 CpuPlatform::PlatformData::PlatformData(int numParticles, int numThreads, bool deterministicForces) : posq(4*numParticles), threads(numThreads),
-        deterministicForces(deterministicForces), neighborList(NULL), cutoff(0.0), paddedCutoff(0.0), anyExclusions(false), currentPosqIndex(-1), nextPosqIndex(0) {
+        deterministicForces(deterministicForces), numParticles(numParticles), neighborList(NULL), cutoff(0.0), paddedCutoff(0.0), anyExclusions(false),
+        currentPosqIndex(-1), nextPosqIndex(0) {
     numThreads = threads.getNumThreads();
     threadForce.resize(numThreads);
     for (int i = 0; i < numThreads; i++)
@@ -165,14 +166,14 @@ CpuPlatform::PlatformData::~PlatformData() {
         delete neighborList;
 }
 
-/**
- * Return how much vectorisation is supported for host platform.
- */
-int getVecBlockSize();
-
 void CpuPlatform::PlatformData::requestNeighborList(double cutoffDistance, double padding, bool useExclusions, const vector<set<int> >& exclusionList) {
-    if (neighborList == NULL)
-        neighborList = new CpuNeighborList(getVecBlockSize());
+    if (neighborList == NULL) {
+        neighborList = new CpuNeighborList(getVectorWidth());
+        if (cutoffDistance == 0.0)
+            neighborList->createDenseNeighborList(numParticles, exclusionList);
+    }
+    else if ((cutoffDistance == 0.0) != (cutoff == 0.0))
+        throw OpenMMException("All nonbonded Forces must agree on whether to apply a cutoff");
     if (cutoffDistance > cutoff)
         cutoff = cutoffDistance;
     if (cutoffDistance+padding > paddedCutoff)

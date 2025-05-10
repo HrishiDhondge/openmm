@@ -158,6 +158,7 @@ class StateDataReporter(object):
         self._needsVelocities = False
         self._needsForces = False
         self._needEnergy = potentialEnergy or kineticEnergy or totalEnergy or temperature
+        self._includes = ['energy'] if self._needEnergy else []
 
     def describeNextReport(self, simulation):
         """Get information about the next report this object will generate.
@@ -169,14 +170,11 @@ class StateDataReporter(object):
 
         Returns
         -------
-        tuple
-            A five element tuple. The first element is the number of steps
-            until the next report. The remaining elements specify whether
-            that report will require positions, velocities, forces, and
-            energies respectively.
+        dict
+            A dictionary describing the required information for the next report
         """
         steps = self._reportInterval - simulation.currentStep%self._reportInterval
-        return (steps, self._needsPositions, self._needsVelocities, self._needsForces, self._needEnergy)
+        return {'steps':steps, 'periodic':None, 'include':self._includes}
 
     def report(self, simulation, state):
         """Generate a report.
@@ -248,7 +246,11 @@ class StateDataReporter(object):
         if self._totalEnergy:
             values.append((state.getKineticEnergy()+state.getPotentialEnergy()).value_in_unit(unit.kilojoules_per_mole))
         if self._temperature:
-            values.append((2*state.getKineticEnergy()/(self._dof*unit.MOLAR_GAS_CONSTANT_R)).value_in_unit(unit.kelvin))
+            integrator = simulation.context.getIntegrator()
+            if hasattr(integrator, 'computeSystemTemperature'):
+                values.append(integrator.computeSystemTemperature().value_in_unit(unit.kelvin))
+            else:
+                values.append((2*state.getKineticEnergy()/(self._dof*unit.MOLAR_GAS_CONSTANT_R)).value_in_unit(unit.kelvin))
         if self._volume:
             values.append(volume.value_in_unit(unit.nanometer**3))
         if self._density:
@@ -358,9 +360,9 @@ class StateDataReporter(object):
         if self._needEnergy:
             energy = (state.getKineticEnergy()+state.getPotentialEnergy()).value_in_unit(unit.kilojoules_per_mole)
             if math.isnan(energy):
-                raise ValueError('Energy is NaN')
+                raise ValueError('Energy is NaN.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan')
             if math.isinf(energy):
-                raise ValueError('Energy is infinite')
+                raise ValueError('Energy is infinite.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan')
 
     def __del__(self):
         if self._openedFile:

@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2019 Stanford University and the Authors.           *
+ * Portions copyright (c) 2019-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -36,14 +36,20 @@
 #include "openmm/common/ComputeEvent.h"
 #include "openmm/common/ComputeForceInfo.h"
 #include "openmm/common/ComputeProgram.h"
+#include "openmm/common/ComputeQueue.h"
+#include "openmm/common/ComputeSort.h"
 #include "openmm/common/ComputeVectorTypes.h"
+#include "openmm/common/FFT3D.h"
 #include "openmm/common/IntegrationUtilities.h"
 #include "openmm/common/NonbondedUtilities.h"
 #include "openmm/Vec3.h"
-#include <pthread.h>
+#include "openmm/internal/ContextImpl.h"
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace OpenMM {
@@ -130,6 +136,37 @@ public:
      */
     virtual int getContextIndex() const = 0;
     /**
+     * Get a list of all contexts being used for the current simulation.
+     * This is relevant when a simulation is parallelized across multiple devices.  In that case,
+     * one ComputeContext is created for each device.
+     */
+    virtual std::vector<ComputeContext*> getAllContexts() = 0;
+    /**
+     * Get the ContextImpl is ComputeContext is associated with.
+     */
+    virtual ContextImpl& getContextImpl() = 0;
+    /**
+     * Get a workspace used for accumulating energy when a simulation is parallelized across
+     * multiple devices.
+     */
+    virtual double& getEnergyWorkspace() = 0;
+    /**
+     * Create a new ComputeQueue for use with this context.
+     */
+    virtual ComputeQueue createQueue() = 0;
+    /**
+     * Get the ComputeQueue currently being used for execution.
+     */
+    ComputeQueue getCurrentQueue();
+    /**
+     * Set the ComputeQueue to use for execution.
+     */
+    void setCurrentQueue(ComputeQueue queue);
+    /**
+     * Reset the context to using the default queue for execution.
+     */
+    void restoreDefaultQueue();
+    /**
      * Construct an uninitialized array of the appropriate class for this platform.  The returned
      * value should be created on the heap with the "new" operator.
      */
@@ -138,6 +175,19 @@ public:
      * Construct a ComputeEvent object of the appropriate class for this platform.
      */
     virtual ComputeEvent createEvent() = 0;
+    /**
+     * Construct a ComputeSort object of the appropriate class for this platform.
+     * 
+     * @param trait      a SortTrait defining the type of data to sort.  It should have been allocated
+     *                   on the heap with the "new" operator.  This object takes over ownership of it,
+     *                   and deletes it when the ComputeSort is deleted.
+     * @param length     the length of the arrays this object will be used to sort
+     * @param uniform    whether the input data is expected to follow a uniform or nonuniform
+     *                   distribution.  This argument is used only as a hint.  It allows parts
+     *                   of the algorithm to be tuned for faster performance on the expected
+     *                   distribution.
+     */
+    virtual ComputeSort createSort(ComputeSortImpl::SortTrait* trait, unsigned int length, bool uniform=true) = 0;
     /**
      * Compile source code to create a ComputeProgram.
      *
@@ -248,8 +298,18 @@ public:
     /**
      * Reorder the internal arrays of atoms to try to keep spatially contiguous atoms close
      * together in the arrays.
+     * 
+     * Calling this method might or might not actually change the atom order.  It uses
+     * internal heuristics to decide when and how often to update the order.  If you
+     * want to guarantee that reordering will definitely be done, call forceReorder() before
+     * calling this.
      */
     void reorderAtoms();
+    /**
+     * Calling this method guarantees that the next call to reorderAtoms() will actually
+     * perform reordering.
+     */
+    void forceReorder();
     /**
      * Add a listener that should be called whenever atoms get reordered.  The OpenCLContext
      * assumes ownership of the object, and deletes it when the context itself is deleted.
@@ -378,6 +438,10 @@ public:
         return atomIndex;
     }
     /**
+     * Set the vector which contains the index of each atom.
+     */
+    void setAtomIndex(std::vector<int>& index);
+    /**
      * Get the array which contains the index of each atom.
      */
     virtual ArrayInterface& getAtomIndexArray() = 0;
@@ -386,6 +450,12 @@ public:
      */
     std::vector<mm_int4>& getPosCellOffsets() {
         return posCellOffsets;
+    }
+    /**
+     * Set the number of cells by which the positions are offset.
+     */
+    void setPosCellOffsets(std::vector<mm_int4>& offsets) {
+        posCellOffsets = offsets;
     }
     /**
      * Replace all occurrences of a list of substrings.
@@ -398,8 +468,10 @@ public:
     /**
      * Convert a number to a string in a format suitable for including in a kernel.
      * This takes into account whether the context uses single or double precision.
+     * If mixedIsDouble is true, a double precision constant will also be produced
+     * in mixed precision mode.
      */
-    std::string doubleToString(double value) const;
+    std::string doubleToString(double value, bool mixedIsDouble=false) const;
     /**
      * Convert a number to a string in a format suitable for including in a kernel.
      */
@@ -440,15 +512,38 @@ public:
      */
     virtual NonbondedUtilities* createNonbondedUtilities() = 0;
     /**
+     * Create an object for performing 3D FFTs.  The caller is responsible for deleting
+     * the object when it is no longer needed.
+     *
+     * @param xsize   the first dimension of the data sets on which FFTs will be performed
+     * @param ysize   the second dimension of the data sets on which FFTs will be performed
+     * @param zsize   the third dimension of the data sets on which FFTs will be performed
+     * @param realToComplex  if true, a real-to-complex transform will be done.  Otherwise, it is complex-to-complex.
+     */
+    virtual FFT3D createFFT(int xsize, int ysize, int zsize, bool realToComplex=false) = 0;
+    /**
+     * Get the smallest legal size for a dimension of the grid.
+     */
+    virtual int findLegalFFTDimension(int minimum);
+    /**
      * This should be called by the Integrator from its own initialize() method.
      * It ensures all contexts are fully initialized.
      */
     virtual void initializeContexts() = 0;
     /**
+     * Set the particle charges.  These are packed into the fourth element of the posq array.
+     */
+    virtual void setCharges(const std::vector<double>& charges) = 0;
+    /**
+     * Request to use the fourth element of the posq array for storing charges.  Since only one force can
+     * do that, this returns true the first time it is called, and false on all subsequent calls.
+     */
+    virtual bool requestPosqCharges() = 0;
+    /**
      * Get the thread used by this context for executing parallel computations.
      */
     WorkThread& getWorkThread() {
-        return *thread;
+        return *workThread;
     }
     /**
      * Get the names of all parameters with respect to which energy derivatives are computed.
@@ -481,7 +576,12 @@ public:
      * may be invalid.  This should be called whenever force field parameters change.  It will cause the
      * definitions and order to be revalidated.
      */
-    bool invalidateMolecules(ComputeForceInfo* force);
+    bool invalidateMolecules(ComputeForceInfo* force, bool checkAtoms=true, bool checkGroups=true);
+    /**
+     * Make sure the current atom order is valid, based on the forces.  If not, perform reordering
+     * to generate a new valid order.  This method is only needed in very unusual situations.
+     */
+    void validateAtomOrder();
     /**
      * Wait until all work that has been queued (kernel executions, asynchronous data transfers, etc.)
      * has been submitted to the device.  This does not mean it has necessarily been completed.
@@ -494,6 +594,7 @@ protected:
     struct MoleculeGroup;
     class VirtualSiteInfo;
     void findMoleculeGroups();
+    void resetAtomOrder();
     /**
      * This is the internal implementation of reorderAtoms(), templatized by the numerical precision in use.
      */
@@ -503,7 +604,8 @@ protected:
     double time;
     int numAtoms, paddedNumAtoms, computeForceCount, stepsSinceReorder;
     long long stepCount;
-    bool atomsWereReordered, forcesValid;
+    bool forceNextReorder, atomsWereReordered, forcesValid;
+    ComputeQueue defaultQueue, currentQueue;
     std::vector<ComputeForceInfo*> forces;
     std::vector<Molecule> molecules;
     std::vector<MoleculeGroup> moleculeGroups;
@@ -512,7 +614,7 @@ protected:
     std::vector<ReorderListener*> reorderListeners;
     std::vector<ForcePreComputation*> preComputations;
     std::vector<ForcePostComputation*> postComputations;
-    WorkThread* thread;
+    WorkThread* workThread;
 };
 
 struct ComputeContext::Molecule {
@@ -556,6 +658,10 @@ public:
      */
     bool isFinished();
     /**
+     * Get whether the thread invoking this method is the worker thread.
+     */
+    bool isCurrentThread();
+    /**
      * Block until all tasks have finished executing and the worker thread is idle.
      */
     void flush();
@@ -563,9 +669,9 @@ private:
     std::queue<ComputeContext::WorkTask*> tasks;
     bool waiting, finished, threwException;
     OpenMMException stashedException;
-    pthread_mutex_t queueLock;
-    pthread_cond_t waitForTaskCondition, queueEmptyCondition;
-    pthread_t thread;
+    std::mutex queueLock;
+    std::condition_variable waitForTaskCondition, queueEmptyCondition;
+    std::thread workThread;
 };
 
 /**

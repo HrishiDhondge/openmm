@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -48,7 +48,7 @@ using namespace std;
 
 CudaPlatform platform;
 
-class SortTrait : public CudaSort::SortTrait {
+class SortTrait : public ComputeSortImpl::SortTrait {
     int getDataSize() const {return 4;}
     int getKeySize() const {return 4;}
     const char* getDataType() const {return "float";}
@@ -65,8 +65,8 @@ void verifySorting(vector<float> array, bool uniform) {
     System system;
     system.addParticle(0.0);
     CudaPlatform::PlatformData platformData(NULL, system, "", "true", platform.getPropertyDefaultValue("CudaPrecision"), "false",
-            platform.getPropertyDefaultValue(CudaPlatform::CudaCompiler()), platform.getPropertyDefaultValue(CudaPlatform::CudaTempDirectory()),
-            platform.getPropertyDefaultValue(CudaPlatform::CudaHostCompiler()), platform.getPropertyDefaultValue(CudaPlatform::CudaDisablePmeStream()), "false", true, 1, NULL);
+            platform.getPropertyDefaultValue(CudaPlatform::CudaTempDirectory()),
+            platform.getPropertyDefaultValue(CudaPlatform::CudaDisablePmeStream()), "false", 1, NULL);
     CudaContext& context = *platformData.contexts[0];
     context.initialize();
     context.setAsCurrent();

@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors:                                                                   *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,6 +34,7 @@
 #endif
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/AmoebaVdwForceImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/amoebaKernels.h"
 #include <map>
 #include <cmath>
@@ -52,6 +53,24 @@ void AmoebaVdwForceImpl::initialize(ContextImpl& context) {
 
     if (owner.getNumParticles() != system.getNumParticles())
         throw OpenMMException("AmoebaVdwForce must have exactly as many particles as the System it belongs to.");
+    for (int i = 0; i < owner.getNumParticles(); i++) {
+        int parentIndex, typeIndex;
+        double sigma, epsilon, reductionFactor, scaleFactor;
+        bool isAlchemical;
+        owner.getParticleParameters(i, parentIndex, sigma, epsilon, reductionFactor, isAlchemical, typeIndex, scaleFactor);
+        if (sigma < 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle cannot be negative");
+        if (owner.getPotentialFunction() == AmoebaVdwForce::Buffered147 && sigma == 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle cannot be zero");
+    }
+    for (int i = 0; i < owner.getNumParticleTypes(); i++) {
+        double sigma, epsilon;
+        owner.getParticleTypeParameters(i, sigma, epsilon);
+        if (sigma < 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle type cannot be negative");
+        if (owner.getPotentialFunction() == AmoebaVdwForce::Buffered147 && sigma == 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle type cannot be zero");
+    }
 
     // check that cutoff < 0.5*boxSize
 
@@ -60,7 +79,7 @@ void AmoebaVdwForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("AmoebaVdwForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("AmoebaVdwForce: "+Messages::cutoffTooLarge);
     }   
 
     kernel = context.getPlatform().createKernel(CalcAmoebaVdwForceKernel::Name(), context);
@@ -82,11 +101,11 @@ void AmoebaVdwForceImpl::createParameterMatrix(const AmoebaVdwForce& force, vect
     if (force.getUseParticleTypes()) {
         // We get the types directly from the particles.
 
-        double sigma, epsilon, reduction;
+        double sigma, epsilon, reduction, scaleFactor;
         int parent;
         bool isAlchemical;
         for (int i = 0; i < numParticles; i++)
-            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, type[i]);
+            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, type[i], scaleFactor);
         numTypes = force.getNumParticleTypes();
         typeSigma.resize(numTypes);
         typeEpsilon.resize(numTypes);
@@ -98,10 +117,10 @@ void AmoebaVdwForceImpl::createParameterMatrix(const AmoebaVdwForce& force, vect
 
         map<pair<double, double>, int> typeForParams;
         for (int i = 0; i < numParticles; i++) {
-            double sigma, epsilon, reduction;
+            double sigma, epsilon, reduction, scaleFactor;
             int parent, typeIndex;
             bool isAlchemical;
-            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, typeIndex);
+            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, typeIndex, scaleFactor);
             pair<double, double> params = make_pair(sigma, epsilon);
             map<pair<double, double>, int>::iterator entry = typeForParams.find(params);
             if (entry == typeForParams.end()) {

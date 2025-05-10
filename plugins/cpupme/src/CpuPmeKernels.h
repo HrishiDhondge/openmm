@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2013-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -38,21 +38,23 @@
 #include "openmm/Vec3.h"
 #include "openmm/internal/ThreadPool.h"
 #include <atomic>
-#include <fftw3.h>
-#include <pthread.h>
+#include <complex>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace OpenMM {
 
 /**
  * This is an optimized CPU implementation of CalcPmeReciprocalForceKernel.  It is both
- * vectorized (requiring SSE 4.1) and multithreaded.  It uses FFTW to perform the FFTs.
+ * vectorized (requiring SSE 4.1) and multithreaded.  It uses PocketFFT to perform the FFTs.
  */
 
 class OPENMM_EXPORT_PME CpuCalcPmeReciprocalForceKernel : public CalcPmeReciprocalForceKernel {
 public:
     CpuCalcPmeReciprocalForceKernel(const std::string& name, const Platform& platform) : CalcPmeReciprocalForceKernel(name, platform),
-            hasCreatedPlan(false), isDeleted(false), realGrid(NULL), complexGrid(NULL) {
+            isDeleted(false) {
     }
     /**
      * Initialize the kernel.
@@ -104,28 +106,28 @@ public:
     void getPMEParameters(double& alpha, int& nx, int& ny, int& nz) const;
 private:
     /**
-     * Select a size for one grid dimension that FFTW can handle efficiently.
+     * Select a size for one grid dimension that PocketFFT can handle efficiently.
      */
-    int findFFTDimension(int minimum, bool isZ);
+    int findFFTDimension(int minimum);
     static bool hasInitializedThreads;
     static int numThreads;
     int gridx, gridy, gridz, numParticles;
     double alpha;
     bool deterministic;
-    bool hasCreatedPlan, isFinished, isDeleted;
+    bool isFinished, isDeleted;
     std::vector<float> force;
     std::vector<float> bsplineModuli[3];
     std::vector<float> recipEterm;
     Vec3 lastBoxVectors[3];
     std::vector<float> threadEnergy;
-    std::vector<float*> tempGrid;
-    float* realGrid;
-    fftwf_complex* complexGrid;
-    fftwf_plan forwardFFT, backwardFFT;
+    std::vector<std::vector<float> > realGrids;
+    std::vector<std::complex<float> > complexGrid;
+    std::vector<std::size_t> gridShape, fftAxes;
+    std::vector<std::ptrdiff_t> realGridStride, complexGridStride;
     int waitCount;
-    pthread_cond_t startCondition, endCondition;
-    pthread_mutex_t lock;
-    pthread_t mainThread;
+    std::condition_variable startCondition, endCondition;
+    std::mutex lock;
+    std::thread mainThread;
     // The following variables are used to store information about the calculation currently being performed.
     IO* io;
     float energy;
@@ -139,13 +141,13 @@ private:
 
 /**
  * This is an optimized CPU implementation of CalcDispersionPmeReciprocalForceKernel.  It is both
- * vectorized (requiring SSE 4.1) and multithreaded.  It uses FFTW to perform the FFTs.
+ * vectorized (requiring SSE 4.1) and multithreaded.  It uses PocketFFT to perform the FFTs.
  */
 
 class OPENMM_EXPORT_PME CpuCalcDispersionPmeReciprocalForceKernel : public CalcDispersionPmeReciprocalForceKernel {
 public:
     CpuCalcDispersionPmeReciprocalForceKernel(const std::string& name, const Platform& platform) : CalcDispersionPmeReciprocalForceKernel(name, platform),
-            hasCreatedPlan(false), isDeleted(false), realGrid(NULL), complexGrid(NULL)  {
+            isDeleted(false) {
     }
     /**
      * Initialize the kernel.
@@ -198,28 +200,28 @@ public:
 private:
     class ComputeTask;
     /**
-     * Select a size for one grid dimension that FFTW can handle efficiently.
+     * Select a size for one grid dimension that PocketFFT can handle efficiently.
      */
-    int findFFTDimension(int minimum, bool isZ);
+    int findFFTDimension(int minimum);
     static bool hasInitializedThreads;
     static int numThreads;
     int gridx, gridy, gridz, numParticles;
     double alpha;
     bool deterministic;
-    bool hasCreatedPlan, isFinished, isDeleted;
+    bool isFinished, isDeleted;
     std::vector<float> force;
     std::vector<float> bsplineModuli[3];
     std::vector<float> recipEterm;
     Vec3 lastBoxVectors[3];
     std::vector<float> threadEnergy;
-    std::vector<float*> tempGrid;
-    float* realGrid;
-    fftwf_complex* complexGrid;
-    fftwf_plan forwardFFT, backwardFFT;
+    std::vector<std::vector<float> > realGrids;
+    std::vector<std::complex<float> > complexGrid;
+    std::vector<std::size_t> gridShape, fftAxes;
+    std::vector<std::ptrdiff_t> realGridStride, complexGridStride;
     int waitCount;
-    pthread_cond_t startCondition, endCondition;
-    pthread_mutex_t lock;
-    pthread_t mainThread;
+    std::condition_variable startCondition, endCondition;
+    std::mutex lock;
+    std::thread mainThread;
     // The following variables are used to store information about the calculation currently being performed.
     CalcPmeReciprocalForceKernel::IO* io;
     float energy;

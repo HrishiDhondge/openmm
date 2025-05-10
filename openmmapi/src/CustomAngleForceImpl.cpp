@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2010-2021 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -44,6 +44,7 @@ using std::string;
 using std::stringstream;
 
 CustomAngleForceImpl::CustomAngleForceImpl(const CustomAngleForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomAngleForceImpl::~CustomAngleForceImpl() {
@@ -78,7 +79,7 @@ void CustomAngleForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomAngleForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomAngleForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
@@ -96,7 +97,7 @@ map<string, double> CustomAngleForceImpl::getDefaultParameters() {
     return parameters;
 }
 
-void CustomAngleForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcCustomAngleForceKernel>().copyParametersToContext(context, owner);
+void CustomAngleForceImpl::updateParametersInContext(ContextImpl& context, int firstAngle, int lastAngle) {
+    kernel.getAs<CalcCustomAngleForceKernel>().copyParametersToContext(context, owner, firstAngle, lastAngle);
     context.systemChanged();
 }

@@ -12,7 +12,7 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2022 Stanford University and the Authors.
+Portions copyright (c) 2012-2023 Stanford University and the Authors.
 Authors: Randall J. Radmer, John D. Chodera, Peter Eastman
 Contributors: Christoph Klein, Michael R. Shirts, Jason Swails, Kye Won Wang
 
@@ -62,7 +62,7 @@ from . import customgbforces as customgb
 #=============================================================================================
 
 # A regex for extracting print format info from the FORMAT lines.
-FORMAT_RE_PATTERN=re.compile("([0-9]+)\(?([a-zA-Z]+)([0-9]+)\.?([0-9]*)\)?")
+FORMAT_RE_PATTERN=re.compile(r"([0-9]+)\(?([a-zA-Z]+)([0-9]+)\.?([0-9]*)\)?")
 
 # Pointer labels which map to pointer numbers at top of prmtop files
 POINTER_LABELS  = """
@@ -768,15 +768,18 @@ def readAmberSystem(topology, prmtop_filename=None, prmtop_loader=None, shake=No
 
     # Add constraints.
     isWater = [prmtop.getResidueLabel(i) in ('WAT', 'HOH', 'TP4', 'TP5', 'T4E') for i in range(prmtop.getNumAtoms())]
+    isEP = [a.element is None for a in topology.atoms()]
     if shake in ('h-bonds', 'all-bonds', 'h-angles'):
         for (iAtom, jAtom, k, rMin) in prmtop.getBondsWithH():
-            system.addConstraint(iAtom, jAtom, rMin)
+            if not (isEP[iAtom] or isEP[jAtom]):
+                system.addConstraint(iAtom, jAtom, rMin)
     if shake in ('all-bonds', 'h-angles'):
         for (iAtom, jAtom, k, rMin) in prmtop.getBondsNoH():
-            system.addConstraint(iAtom, jAtom, rMin)
+            if not (isEP[iAtom] or isEP[jAtom]):
+                system.addConstraint(iAtom, jAtom, rMin)
     if rigidWater and shake is None:
         for (iAtom, jAtom, k, rMin) in prmtop.getBondsWithH():
-            if isWater[iAtom] and isWater[jAtom]:
+            if isWater[iAtom] and isWater[jAtom] and not (isEP[iAtom] or isEP[jAtom]):
                 system.addConstraint(iAtom, jAtom, rMin)
 
     # Add harmonic bonds.
@@ -887,7 +890,7 @@ def readAmberSystem(topology, prmtop_filename=None, prmtop_loader=None, shake=No
     # Add nonbonded interactions.
     if verbose: print("Adding nonbonded interactions...")
     force = mm.NonbondedForce()
-    if (prmtop.getIfBox() == 0):
+    if topology.getPeriodicBoxVectors() is None and prmtop.getIfBox() == 0:
         # System is non-periodic.
         if nonbondedMethod == 'NoCutoff':
             force.setNonbondedMethod(mm.NonbondedForce.NoCutoff)
@@ -901,9 +904,12 @@ def readAmberSystem(topology, prmtop_filename=None, prmtop_loader=None, shake=No
     else:
         # System is periodic.
         # Set periodic box vectors for periodic system
-        (boxBeta, boxX, boxY, boxZ) = prmtop.getBoxBetaAndDimensions()
-        xVec, yVec, zVec = computePeriodicBoxVectors(boxX, boxY, boxZ, boxBeta, boxBeta, boxBeta)
-        system.setDefaultPeriodicBoxVectors(xVec, yVec, zVec)
+        if topology.getPeriodicBoxVectors() is None:
+            (boxBeta, boxX, boxY, boxZ) = prmtop.getBoxBetaAndDimensions()
+            xVec, yVec, zVec = computePeriodicBoxVectors(boxX, boxY, boxZ, boxBeta, boxBeta, boxBeta)
+            system.setDefaultPeriodicBoxVectors(xVec, yVec, zVec)
+        else:
+            system.setDefaultPeriodicBoxVectors(*topology.getPeriodicBoxVectors())
 
         # Set cutoff.
         if nonbondedCutoff is None:
@@ -1328,7 +1334,7 @@ class AmberAsciiRestart(object):
             hasbox = hasvels = True
         else:
             raise TypeError('Badly formatted restart file. Has %d lines '
-                            'for %d atoms.' % (len(self.lines), self.natom))
+                            'for %d atoms.' % (len(lines), self.natom))
 
         if self._asNumpy:
             coordinates = np.zeros((self.natom, 3), np.float32)
@@ -1434,14 +1440,9 @@ class AmberNetcdfRestart(object):
     """
     def __init__(self, filename, asNumpy=False):
         try:
-            from scipy.io import NetCDFFile
+            from scipy.io import netcdf_file
         except ImportError:
-            # scipy < 1.8.0
-            try:
-                from scipy.io.netcdf import NetCDFFile
-            except ImportError:
-                raise ImportError('scipy is necessary to parse NetCDF '
-                                  'restarts')
+            raise ImportError('scipy is necessary to parse NetCDF restarts')
 
         self.filename = filename
         self.velocities = self.boxVectors = self.time = None
@@ -1451,10 +1452,10 @@ class AmberNetcdfRestart(object):
         # to valid memory while the file handle is open. Since the context
         # manager GCs the ncfile handle, the memory for the original variables
         # is no longer valid. So copy those arrays while the handle is still
-        # open. This is unnecessary in scipy v.0.12 and lower because NetCDFFile
+        # open. This is unnecessary in scipy v.0.12 and lower because netcdf_file
         # accidentally leaks the file handle, but that was 'fixed' in 0.13. This
         # fix taken from MDTraj
-        ncfile = NetCDFFile(filename, 'r')
+        ncfile = netcdf_file(filename, 'r')
         try:
             self.natom = ncfile.dimensions['atom']
             self.coordinates = np.array(ncfile.variables['coordinates'][:])

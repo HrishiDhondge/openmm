@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2022 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -30,7 +30,6 @@
 #include "OpenCLContext.h"
 #include "OpenCLKernelSources.h"
 #include "OpenCLExpressionUtilities.h"
-#include "OpenCLSort.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -39,69 +38,65 @@
 using namespace OpenMM;
 using namespace std;
 
-class OpenCLNonbondedUtilities::BlockSortTrait : public OpenCLSort::SortTrait {
+class OpenCLNonbondedUtilities::BlockSortTrait : public ComputeSortImpl::SortTrait {
 public:
-    BlockSortTrait(bool useDouble) : useDouble(useDouble) {
-    }
-    int getDataSize() const {return useDouble ? sizeof(mm_double2) : sizeof(mm_float2);}
-    int getKeySize() const {return useDouble ? sizeof(cl_double) : sizeof(cl_float);}
-    const char* getDataType() const {return "real2";}
-    const char* getKeyType() const {return "real";}
-    const char* getMinKey() const {return "-MAXFLOAT";}
-    const char* getMaxKey() const {return "MAXFLOAT";}
-    const char* getMaxValue() const {return "(real2) (MAXFLOAT, MAXFLOAT)";}
-    const char* getSortKey() const {return "value.x";}
-private:
-    bool useDouble;
+    BlockSortTrait() {}
+    int getDataSize() const {return sizeof(int);}
+    int getKeySize() const {return sizeof(int);}
+    const char* getDataType() const {return "unsigned int";}
+    const char* getKeyType() const {return "unsigned int";}
+    const char* getMinKey() const {return "0";}
+    const char* getMaxKey() const {return "0xFFFFFFFFu";}
+    const char* getMaxValue() const {return "0xFFFFFFFFu";}
+    const char* getSortKey() const {return "value";}
 };
 
-OpenCLNonbondedUtilities::OpenCLNonbondedUtilities(OpenCLContext& context) : context(context), useCutoff(false), usePeriodic(false), anyExclusions(false), usePadding(true),
-        numForceBuffers(0), blockSorter(NULL), pinnedCountBuffer(NULL), pinnedCountMemory(NULL), forceRebuildNeighborList(true), lastCutoff(0.0), groupFlags(0) {
+OpenCLNonbondedUtilities::OpenCLNonbondedUtilities(OpenCLContext& context) : context(context), useCutoff(false), usePeriodic(false), useNeighborList(false), anyExclusions(false), usePadding(true),
+        pinnedCountBuffer(NULL), pinnedCountMemory(NULL), forceRebuildNeighborList(true), groupFlags(0), tilesAfterReorder(0) {
     // Decide how many thread blocks and force buffers to use.
 
     deviceIsCpu = (context.getDevice().getInfo<CL_DEVICE_TYPE>() == CL_DEVICE_TYPE_CPU);
     if (deviceIsCpu) {
         numForceThreadBlocks = context.getNumThreadBlocks();
         forceThreadBlockSize = 1;
-        numForceBuffers = numForceThreadBlocks;
     }
     else if (context.getSIMDWidth() == 32) {
-        if (context.getSupports64BitGlobalAtomics()) {
-            numForceThreadBlocks = 4*context.getDevice().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
-            forceThreadBlockSize = 256;
-            // Even though using longForceBuffer, still need a single forceBuffer for the reduceForces kernel to convert the long results into float4 which will be used by later kernels.
-            numForceBuffers = 1;
+        int blocksPerComputeUnit = 4;
+        std::string vendor = context.getDevice().getInfo<CL_DEVICE_VENDOR>();
+        if (vendor.size() >= 5 && vendor.substr(0, 5) == "Apple") {
+            // 1536 threads per GPU core.
+            blocksPerComputeUnit = 6;
         }
-        else {
-            numForceThreadBlocks = 3*context.getDevice().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
-            forceThreadBlockSize = 256;
-            numForceBuffers = numForceThreadBlocks*forceThreadBlockSize/OpenCLContext::TileSize;
-        }
+        numForceThreadBlocks = blocksPerComputeUnit*context.getDevice().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
+        forceThreadBlockSize = 256;
     }
     else {
         numForceThreadBlocks = context.getNumThreadBlocks();
         forceThreadBlockSize = (context.getSIMDWidth() >= 32 ? OpenCLContext::ThreadBlockSize : 32);
-        if (context.getSupports64BitGlobalAtomics()) {
-            // Even though using longForceBuffer, still need a single forceBuffer for the reduceForces kernel to convert the long results into float4 which will be used by later kernels.
-            numForceBuffers = 1;
-        }
-        else {
-            numForceBuffers = numForceThreadBlocks*forceThreadBlockSize/OpenCLContext::TileSize;
-        }
     }
     pinnedCountBuffer = new cl::Buffer(context.getContext(), CL_MEM_ALLOC_HOST_PTR, sizeof(unsigned int));
     pinnedCountMemory = (unsigned int*) context.getQueue().enqueueMapBuffer(*pinnedCountBuffer, CL_TRUE, CL_MAP_READ, 0, sizeof(int));
+    
+    // When building the neighbor list, we can optionally use large blocks (1024 atoms) to
+    // accelerate the process.  This makes building the neighbor list faster, but it prevents
+    // us from sorting atom blocks by size, which leads to a slightly less efficient neighbor
+    // list.  We guess based on system size which will be faster.
+
+    useLargeBlocks = (!deviceIsCpu && context.getNumAtoms() > 100000);
+
+    std::string vendor = context.getDevice().getInfo<CL_DEVICE_VENDOR>();
+    isAMD = !deviceIsCpu && ((vendor.size() >= 3 && vendor.substr(0, 3) == "AMD") || (vendor.size() >= 28 && vendor.substr(0, 28) == "Advanced Micro Devices, Inc."));
+
     setKernelSource(deviceIsCpu ? OpenCLKernelSources::nonbonded_cpu : OpenCLKernelSources::nonbonded);
 }
 
 OpenCLNonbondedUtilities::~OpenCLNonbondedUtilities() {
-    if (blockSorter != NULL)
-        delete blockSorter;
     if (pinnedCountBuffer != NULL)
         delete pinnedCountBuffer;
 }
 
-void OpenCLNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance, const vector<vector<int> >& exclusionList, const string& kernel, int forceGroup) {
+void OpenCLNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance,
+            const vector<vector<int> >& exclusionList, const string& kernel, int forceGroup, bool useNeighborList, bool supportsPairList) {
     if (groupCutoff.size() > 0) {
         if (usesCutoff != useCutoff)
             throw OpenMMException("All Forces must agree on whether to use a cutoff");
@@ -114,6 +109,7 @@ void OpenCLNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic
         requestExclusions(exclusionList);
     useCutoff = usesCutoff;
     usePeriodic = usesPeriodic;
+    this->useNeighborList |= ((useNeighborList || deviceIsCpu) && useCutoff);
     groupCutoff[forceGroup] = cutoffDistance;
     groupFlags |= 1<<forceGroup;
     if (kernel.size() > 0) {
@@ -227,7 +223,7 @@ void OpenCLNonbondedUtilities::initialize(const System& system) {
     vector<mm_int2> exclusionTilesVec;
     for (set<pair<int, int> >::const_iterator iter = tilesWithExclusions.begin(); iter != tilesWithExclusions.end(); ++iter)
         exclusionTilesVec.push_back(mm_int2(iter->first, iter->second));
-    sort(exclusionTilesVec.begin(), exclusionTilesVec.end(), context.getSIMDWidth() <= 32 || !useCutoff ? compareInt2 : compareInt2LargeSIMD);
+    sort(exclusionTilesVec.begin(), exclusionTilesVec.end(), context.getSIMDWidth() <= 32 || !useNeighborList ? compareInt2 : compareInt2LargeSIMD);
     exclusionTiles.initialize<mm_int2>(context, exclusionTilesVec.size(), "exclusionTiles");
     exclusionTiles.upload(exclusionTilesVec);
     map<pair<int, int>, int> exclusionTileMap;
@@ -284,6 +280,7 @@ void OpenCLNonbondedUtilities::initialize(const System& system) {
 
     // Create data structures for the neighbor list.
 
+    maxCutoff = getMaxCutoffDistance();
     if (useCutoff) {
         // Select a size for the arrays that hold the neighbor list.  We have to make a fairly
         // arbitrary guess, but if this turns out to be too small we'll increase it later.
@@ -300,12 +297,16 @@ void OpenCLNonbondedUtilities::initialize(const System& system) {
         int elementSize = (context.getUseDoublePrecision() ? sizeof(cl_double) : sizeof(cl_float));
         blockCenter.initialize(context, numAtomBlocks, 4*elementSize, "blockCenter");
         blockBoundingBox.initialize(context, numAtomBlocks, 4*elementSize, "blockBoundingBox");
-        sortedBlocks.initialize(context, numAtomBlocks, 2*elementSize, "sortedBlocks");
+        sortedBlocks.initialize<cl_uint>(context, numAtomBlocks, "sortedBlocks");
         sortedBlockCenter.initialize(context, numAtomBlocks+1, 4*elementSize, "sortedBlockCenter");
         sortedBlockBoundingBox.initialize(context, numAtomBlocks+1, 4*elementSize, "sortedBlockBoundingBox");
+        numBlockSizes = min((context.getNumAtomBlocks()+63)/64, context.getNumThreadBlocks());
+        blockSizeRange.initialize(context, numBlockSizes, 2*elementSize, "blockSizeRange");
+        largeBlockCenter.initialize(context, numAtomBlocks, 4*elementSize, "largeBlockCenter");
+        largeBlockBoundingBox.initialize(context, numAtomBlocks, 4*elementSize, "largeBlockBoundingBox");
         oldPositions.initialize(context, numAtoms, 4*elementSize, "oldPositions");
         rebuildNeighborList.initialize<int>(context, 1, "rebuildNeighborList");
-        blockSorter = new OpenCLSort(context, new BlockSortTrait(context.getUseDoublePrecision()), numAtomBlocks, false);
+        blockSorter = context.createSort(new BlockSortTrait(), numAtomBlocks, false);
         vector<cl_uint> count(1, 0);
         interactionCount.upload(count);
         rebuildNeighborList.upload(count);
@@ -346,32 +347,40 @@ void OpenCLNonbondedUtilities::prepareInteractions(int forceGroups) {
         return;
     if (groupKernels.find(forceGroups) == groupKernels.end())
         createKernelsForGroups(forceGroups);
-    if (!useCutoff)
-        return;
-    if (numTiles == 0)
-        return;
     KernelSet& kernels = groupKernels[forceGroups];
-    if (usePeriodic) {
+    if (useCutoff && usePeriodic) {
         mm_float4 box = context.getPeriodicBoxSize();
-        double minAllowedSize = 1.999999*kernels.cutoffDistance;
+        double minAllowedSize = 1.999999*maxCutoff;
         if (box.x < minAllowedSize || box.y < minAllowedSize || box.z < minAllowedSize)
             throw OpenMMException("The periodic box size has decreased to less than twice the nonbonded cutoff.");
     }
+    if (!useNeighborList)
+        return;
+    if (numTiles == 0)
+        return;
 
     // Compute the neighbor list.
 
-    if (lastCutoff != kernels.cutoffDistance)
-        forceRebuildNeighborList = true;
     setPeriodicBoxArgs(context, kernels.findBlockBoundsKernel, 1);
-    context.executeKernel(kernels.findBlockBoundsKernel, context.getNumAtoms());
+    context.executeKernel(kernels.findBlockBoundsKernel, context.getNumAtomBlocks());
+    context.executeKernel(kernels.computeSortKeysKernel, context.getNumAtomBlocks());
+    if (useLargeBlocks)
+        setPeriodicBoxArgs(context, kernels.sortBoxDataKernel, 12);
     blockSorter->sort(sortedBlocks);
     kernels.sortBoxDataKernel.setArg<cl_int>(9, forceRebuildNeighborList);
     context.executeKernel(kernels.sortBoxDataKernel, context.getNumAtoms());
     setPeriodicBoxArgs(context, kernels.findInteractingBlocksKernel, 0);
     context.executeKernel(kernels.findInteractingBlocksKernel, context.getNumAtoms(), interactingBlocksThreadBlockSize);
     forceRebuildNeighborList = false;
-    lastCutoff = kernels.cutoffDistance;
-    context.getQueue().enqueueReadBuffer(interactionCount.getDeviceBuffer(), CL_FALSE, 0, sizeof(int), pinnedCountMemory, NULL, &downloadCountEvent); 
+    context.getQueue().enqueueReadBuffer(interactionCount.getDeviceBuffer(), CL_FALSE, 0, sizeof(int), pinnedCountMemory, NULL, &downloadCountEvent);
+    if (isAMD)
+        context.getQueue().flush();
+
+    #if __APPLE__ && defined(__aarch64__)
+    // Segment the command stream to avoid stalls later.
+    if (groupKernels[forceGroups].hasForces)
+        context.getQueue().flush();
+    #endif
 }
 
 void OpenCLNonbondedUtilities::computeInteractions(int forceGroups, bool includeForces, bool includeEnergy) {
@@ -379,6 +388,8 @@ void OpenCLNonbondedUtilities::computeInteractions(int forceGroups, bool include
         return;
     KernelSet& kernels = groupKernels[forceGroups];
     if (kernels.hasForces) {
+        if (isAMD)
+            context.getQueue().flush();
         cl::Kernel& kernel = (includeForces ? (includeEnergy ? kernels.forceEnergyKernel : kernels.forceKernel) : kernels.energyKernel);
         if (*reinterpret_cast<cl_kernel*>(&kernel) == NULL)
             kernel = createInteractionKernel(kernels.source, parameters, arguments, true, true, forceGroups, includeForces, includeEnergy);
@@ -386,7 +397,12 @@ void OpenCLNonbondedUtilities::computeInteractions(int forceGroups, bool include
             setPeriodicBoxArgs(context, kernel, 9);
         context.executeKernel(kernel, numForceThreadBlocks*forceThreadBlockSize, forceThreadBlockSize);
     }
-    if (useCutoff && numTiles > 0) {
+    if (useNeighborList && numTiles > 0) {
+        #if __APPLE__ && defined(__aarch64__)
+        // Ensure cached up work executes while you're waiting.
+        if (kernels.hasForces)
+            context.getQueue().flush();
+        #endif
         downloadCountEvent.wait();
         updateNeighborListSize();
     }
@@ -395,6 +411,10 @@ void OpenCLNonbondedUtilities::computeInteractions(int forceGroups, bool include
 bool OpenCLNonbondedUtilities::updateNeighborListSize() {
     if (!useCutoff)
         return false;
+    if (context.getStepsSinceReorder() == 0 || tilesAfterReorder == 0)
+        tilesAfterReorder = pinnedCountMemory[0];
+    else if (context.getStepsSinceReorder() > 25 && pinnedCountMemory[0] > 1.1*tilesAfterReorder)
+        context.forceReorder();
     if (pinnedCountMemory[0] <= interactingTiles.getSize())
         return false;
 
@@ -471,23 +491,20 @@ void OpenCLNonbondedUtilities::setAtomBlockRange(double startFraction, double en
 
 void OpenCLNonbondedUtilities::createKernelsForGroups(int groups) {
     KernelSet kernels;
-    double cutoff = 0.0;
     string source;
     for (int i = 0; i < 32; i++) {
         if ((groups&(1<<i)) != 0) {
-            cutoff = max(cutoff, groupCutoff[i]);
             source += groupKernelSource[i];
         }
     }
     kernels.hasForces = (source.size() > 0);
-    kernels.cutoffDistance = cutoff;
     kernels.source = source;
     if (useCutoff) {
-        double paddedCutoff = padCutoff(cutoff);
+        double paddedCutoff = padCutoff(maxCutoff);
         map<string, string> defines;
         defines["TILE_SIZE"] = context.intToString(OpenCLContext::TileSize);
         defines["NUM_ATOMS"] = context.intToString(context.getNumAtoms());
-        defines["PADDING"] = context.doubleToString(paddedCutoff-cutoff);
+        defines["PADDING"] = context.doubleToString(paddedCutoff-maxCutoff);
         defines["PADDED_CUTOFF"] = context.doubleToString(paddedCutoff);
         defines["PADDED_CUTOFF_SQUARED"] = context.doubleToString(paddedCutoff*paddedCutoff);
         defines["NUM_TILES_WITH_EXCLUSIONS"] = context.intToString(exclusionTiles.getSize());
@@ -497,8 +514,15 @@ void OpenCLNonbondedUtilities::createKernelsForGroups(int groups) {
             defines["USE_PERIODIC"] = "1";
         if (context.getBoxIsTriclinic())
             defines["TRICLINIC"] = "1";
+        if (useLargeBlocks)
+            defines["USE_LARGE_BLOCKS"] = "1";
         defines["MAX_EXCLUSIONS"] = context.intToString(maxExclusions);
         defines["BUFFER_GROUPS"] = (deviceIsCpu ? "4" : "2");
+        int binShift = 1;
+        while (1<<binShift <= context.getNumAtomBlocks())
+            binShift++;
+        defines["BIN_SHIFT"] = context.intToString(binShift);
+        defines["BLOCK_INDEX_MASK"] = context.intToString((1<<binShift)-1);
         string file = (deviceIsCpu ? OpenCLKernelSources::findInteractingBlocks_cpu : OpenCLKernelSources::findInteractingBlocks);
         int groupSize = (deviceIsCpu || context.getSIMDWidth() < 32 ? 32 : 256);
         while (true) {
@@ -510,7 +534,12 @@ void OpenCLNonbondedUtilities::createKernelsForGroups(int groups) {
             kernels.findBlockBoundsKernel.setArg<cl::Buffer>(7, blockCenter.getDeviceBuffer());
             kernels.findBlockBoundsKernel.setArg<cl::Buffer>(8, blockBoundingBox.getDeviceBuffer());
             kernels.findBlockBoundsKernel.setArg<cl::Buffer>(9, rebuildNeighborList.getDeviceBuffer());
-            kernels.findBlockBoundsKernel.setArg<cl::Buffer>(10, sortedBlocks.getDeviceBuffer());
+            kernels.findBlockBoundsKernel.setArg<cl::Buffer>(10, blockSizeRange.getDeviceBuffer());
+            kernels.computeSortKeysKernel = cl::Kernel(interactingBlocksProgram, "computeSortKeys");
+            kernels.computeSortKeysKernel.setArg<cl::Buffer>(0, blockBoundingBox.getDeviceBuffer());
+            kernels.computeSortKeysKernel.setArg<cl::Buffer>(1, sortedBlocks.getDeviceBuffer());
+            kernels.computeSortKeysKernel.setArg<cl::Buffer>(2, blockSizeRange.getDeviceBuffer());
+            kernels.computeSortKeysKernel.setArg<cl_int>(3, numBlockSizes);
             kernels.sortBoxDataKernel = cl::Kernel(interactingBlocksProgram, "sortBoxData");
             kernels.sortBoxDataKernel.setArg<cl::Buffer>(0, sortedBlocks.getDeviceBuffer());
             kernels.sortBoxDataKernel.setArg<cl::Buffer>(1, blockCenter.getDeviceBuffer());
@@ -522,6 +551,10 @@ void OpenCLNonbondedUtilities::createKernelsForGroups(int groups) {
             kernels.sortBoxDataKernel.setArg<cl::Buffer>(7, interactionCount.getDeviceBuffer());
             kernels.sortBoxDataKernel.setArg<cl::Buffer>(8, rebuildNeighborList.getDeviceBuffer());
             kernels.sortBoxDataKernel.setArg<cl_int>(9, true);
+            if (useLargeBlocks) {
+                kernels.sortBoxDataKernel.setArg<cl::Buffer>(10, largeBlockCenter.getDeviceBuffer());
+                kernels.sortBoxDataKernel.setArg<cl::Buffer>(11, largeBlockBoundingBox.getDeviceBuffer());
+            }
             kernels.findInteractingBlocksKernel = cl::Kernel(interactingBlocksProgram, "findBlocksWithInteractions");
             kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(5, interactionCount.getDeviceBuffer());
             kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(6, interactingTiles.getDeviceBuffer());
@@ -537,6 +570,10 @@ void OpenCLNonbondedUtilities::createKernelsForGroups(int groups) {
             kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(16, exclusionRowIndices.getDeviceBuffer());
             kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(17, oldPositions.getDeviceBuffer());
             kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(18, rebuildNeighborList.getDeviceBuffer());
+            if (useLargeBlocks) {
+                kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(19, largeBlockCenter.getDeviceBuffer());
+                kernels.findInteractingBlocksKernel.setArg<cl::Buffer>(20, largeBlockBoundingBox.getDeviceBuffer());
+            }
             if (kernels.findInteractingBlocksKernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(context.getDevice()) < groupSize) {
                 // The device can't handle this block size, so reduce it.
 
@@ -683,6 +720,8 @@ cl::Kernel OpenCLNonbondedUtilities::createInteractionKernel(const string& sourc
         defines["USE_EXCLUSIONS"] = "1";
     if (isSymmetric)
         defines["USE_SYMMETRIC"] = "1";
+    if (useNeighborList)
+        defines["USE_NEIGHBOR_LIST"] = "1";
     if (useCutoff && context.getSIMDWidth() < 32)
         defines["PRUNE_BY_CUTOFF"] = "1";
     if (includeForces)
@@ -720,10 +759,7 @@ cl::Kernel OpenCLNonbondedUtilities::createInteractionKernel(const string& sourc
     // Set arguments to the Kernel.
 
     int index = 0;
-    if (context.getSupports64BitGlobalAtomics())
-        kernel.setArg<cl::Memory>(index++, context.getLongForceBuffer().getDeviceBuffer());
-    else
-        kernel.setArg<cl::Buffer>(index++, context.getForceBuffers().getDeviceBuffer());
+    kernel.setArg<cl::Memory>(index++, context.getLongForceBuffer().getDeviceBuffer());
     kernel.setArg<cl::Buffer>(index++, context.getEnergyBuffer().getDeviceBuffer());
     kernel.setArg<cl::Buffer>(index++, context.getPosq().getDeviceBuffer());
     kernel.setArg<cl::Buffer>(index++, exclusions.getDeviceBuffer());

@@ -9,8 +9,8 @@
 
 .. _the-cpu-platform:
 
-The CPU Plaform
-###############
+The CPU Platform
+################
 
 CpuPlatform is a subclass of ReferencePlatform.  It provides optimized versions
 of a small number of kernels, while using the reference implementations for all

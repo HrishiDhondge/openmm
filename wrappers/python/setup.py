@@ -7,7 +7,7 @@ import os
 import sys
 import platform
 import numpy
-from distutils.core import setup
+from setuptools import setup
 from Cython.Build import cythonize
 
 MAJOR_VERSION_NUM='@OPENMM_MAJOR_VERSION@'
@@ -125,12 +125,13 @@ if not release:
 def buildKeywordDictionary(major_version_num=MAJOR_VERSION_NUM,
                            minor_version_num=MINOR_VERSION_NUM,
                            build_info=BUILD_INFO):
-    from distutils.core import Extension
+    from setuptools import Extension
     setupKeywords = {}
     setupKeywords["name"]              = "OpenMM"
-    setupKeywords["version"]           = "%s.%s.%s" % (major_version_num,
+    setupKeywords["version"]           = "%s.%s.%s%s" % (major_version_num,
                                                        minor_version_num,
-                                                       build_info)
+                                                       build_info,
+                                                       os.getenv('VERSION_SUFFIX', ''))
     setupKeywords["author"]            = "Peter Eastman"
     setupKeywords["license"]           = \
     "Python Software Foundation License (BSD-like)"
@@ -152,8 +153,9 @@ def buildKeywordDictionary(major_version_num=MAJOR_VERSION_NUM,
                                           "openmm.app.internal.pdbx.writer"]
     setupKeywords["data_files"]        = []
     setupKeywords["package_data"]      = {"openmm" : [],
-                                          "openmm.app" : ['data/*.xml', 'data/*.pdb', 'data/amber14/*.xml', 'data/charmm36/*.xml', 'data/implicit/*.xml'],
+                                          "openmm.app" : ['data/*.xml', 'data/*.pdb', 'data/amber14/*.xml', 'data/amber19/*.xml', 'data/charmm36/*.xml', 'data/implicit/*.xml'],
                                           "openmm.app.internal" : []}
+    setupKeywords["install_requires"]  = ["numpy"]
     setupKeywords["platforms"]         = ["Linux", "Mac OS X", "Windows"]
     setupKeywords["description"]       = \
     "Python wrapper for OpenMM (a C++ MD package)"
@@ -228,6 +230,22 @@ def buildKeywordDictionary(major_version_num=MAJOR_VERSION_NUM,
         extensionArgs["runtime_library_dirs"] = library_dirs
     setupKeywords["ext_modules"] = [Extension(**extensionArgs)]
     setupKeywords["ext_modules"] += cythonize('openmm/app/internal/*.pyx')
+
+    setupKeywords["ext_modules"] +=cythonize(Extension(
+        "openmm.app.internal.xtc_utils",
+        sources=[
+            "openmm/app/internal/xtc_utils/src/xdrfile_xtc.cpp",
+            "openmm/app/internal/xtc_utils/src/xdrfile.cpp",
+            "openmm/app/internal/xtc_utils/src/xtc.cpp",
+            "openmm/app/internal/xtc_utils/xtc.pyx",
+        ],
+        include_dirs=include_dirs +[
+            "openmm/app/internal/xtc_utils/include",
+            "openmm/app/internal/xtc_utils/",
+            numpy.get_include(),
+        ],
+        language="c++",
+    ))
 
     outputString = ''
     firstTab     = 40

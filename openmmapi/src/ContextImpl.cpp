@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -62,16 +62,9 @@ ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integ
     
     // Check for errors in virtual sites and massless particles.
     
-    for (int i = 0; i < numParticles; i++) {
-        if (system.isVirtualSite(i)) {
-            if (system.getParticleMass(i) != 0.0)
-                throw OpenMMException("Virtual site has nonzero mass");
-            const VirtualSite& site = system.getVirtualSite(i);
-            for (int j = 0; j < site.getNumParticles(); j++)
-                if (system.isVirtualSite(site.getParticle(j)))
-                    throw OpenMMException("A virtual site cannot depend on another virtual site");
-        }
-    }
+    for (int i = 0; i < numParticles; i++)
+        if (system.isVirtualSite(i) && system.getParticleMass(i) != 0.0)
+            throw OpenMMException("Virtual site has nonzero mass");
     set<pair<int, int> > constraintAtoms;
     for (int i = 0; i < system.getNumConstraints(); i++) {
         int particle1, particle2;
@@ -93,23 +86,28 @@ ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integ
     
     // Validate the list of properties.
 
-    const vector<string>& platformProperties = platform->getPropertyNames();
     map<string, string> validatedProperties;
-    for (auto& prop : properties) {
-        string property = prop.first;
-        if (platform->deprecatedPropertyReplacements.find(property) != platform->deprecatedPropertyReplacements.end())
-            property = platform->deprecatedPropertyReplacements[property];
-        bool valid = false;
-        for (auto& p : platformProperties)
-            if (p == property) {
-                valid = true;
-                break;
-            }
-        if (!valid)
-            throw OpenMMException("Illegal property name: "+prop.first);
-        validatedProperties[property] = prop.second;
+    if (platform != NULL) {
+        const vector<string>& platformProperties = platform->getPropertyNames();
+        for (auto& prop : properties) {
+            string property = prop.first;
+            if (platform->deprecatedPropertyReplacements.find(property) != platform->deprecatedPropertyReplacements.end())
+                property = platform->deprecatedPropertyReplacements[property];
+            bool valid = false;
+            for (auto& p : platformProperties)
+                if (p == property) {
+                    valid = true;
+                    break;
+                }
+            if (!valid)
+                throw OpenMMException("Illegal property name: "+prop.first);
+            validatedProperties[property] = prop.second;
+        }
     }
-    
+    else {
+        // There can't be any platform-specific properties if there's no platform
+    }
+
     // Find the list of kernels required.
     
     vector<string> kernelNames;
@@ -183,6 +181,9 @@ void ContextImpl::initialize() {
     for (size_t i = 0; i < forceImpls.size(); ++i) {
         forceImpls[i]->initialize(*this);
         map<string, double> forceParameters = forceImpls[i]->getDefaultParameters();
+        for (auto param : forceParameters)
+            if (parameters.find(param.first) != parameters.end() && parameters[param.first] != forceParameters[param.first])
+                throw OpenMMException("Two Forces define different default values for the parameter '"+param.first+"'");
         parameters.insert(forceParameters.begin(), forceParameters.end());
     }
     integrator.initialize(*this);
@@ -321,6 +322,10 @@ int& ContextImpl::getLastForceGroups() {
 
 double ContextImpl::calcKineticEnergy() {
     return integrator.computeKineticEnergy();
+}
+
+void ContextImpl::computeShiftedVelocities(double timeShift, std::vector<Vec3>& velocities) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().computeShiftedVelocities(*this, timeShift, velocities);
 }
 
 bool ContextImpl::updateContextState() {
